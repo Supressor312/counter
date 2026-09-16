@@ -16,7 +16,7 @@
 //  linii; długość jest dowolna, wielkość liter nie ma znaczenia
 //  (bufor klawiatury jest podnoszony do wielkich liter).
 // =====================================================================
-const SETTINGS_ACCESS_PASSWORD = 'GORDONPAULE';
+const SETTINGS_ACCESS_PASSWORD = 'JAREKHUESOS';
 
 // =====================================================================
 //  LOGI W KONSOLI — GŁÓWNY WYŁĄCZNIK
@@ -237,7 +237,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * WHD ze znakiem plus). 6000 wpisów to ~1 MB JSON — granica, za którą
          * localStorage dzielony z samym TREX robi się ciasny.
          */
-        VALUE_LOG_MAX_ENTRIES: 6000,
+        VALUE_LOG_MAX_ENTRIES: 90000,
         // Archiwum przepisywane jest nie przy każdym wpisie, tylko paczką: przez
         // zmianę idą tysiące przedmiotów, a pełny rozbiór i złożenie 60 zmian
         // dla każdego z nich to czysta strata i na CPU, i na zapis do localStorage.
@@ -525,7 +525,7 @@ const SCRIPT_LOGS_ENABLED = false;
          *
          * Ten sam wzorzec, co w karcie ceny — nie trzeba było wymyślać drugiego.
          */
-        statsWindowPosition: { top: '', left: '20px', bottom: '8px' },
+        statsWindowPosition: { top: '', left: '11px', bottom: '2px' },
         statsWindowBgColorHex: '#ffffff',
         statsWindowBgAlpha: 0,
         priceCard: {
