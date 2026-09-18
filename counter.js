@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         StatsHelper (Reactive Architecture Edition)
 // @namespace    bomba.stats.helper
-// @version      9.2.0
-// @description  Reactive State + EventBus + CSS Variables. Licznik przetworzonych przedmiotów dla TREX.
+// @version      1.0.0
+// @description  Stan reaktywny + EventBus + zmienne CSS. Licznik przetworzonych przedmiotów dla TREX.
 // @match        https://trex-prod-eu.aka.amazon.com/*
 // @run-at       document-end
 // @sandbox      raw
@@ -59,7 +59,7 @@ const SCRIPT_LOGS_ENABLED = false;
 // ZMIANY 9.1.0 — CHANGELOG_9.1.0.md (wspólny dziennik wartości na wszystkie karty)
 // ZMIANY 9.1.1 — CHANGELOG_9.1.1.md (separator tysięcy w odczycie ceny)
 //
-// ZMIANY 9.2.0 — CHANGELOG_9.2.0.md (ten plik):
+// ZMIANY 9.2.0 — tryb cichy (zawartość przeniesiona do wydania 1.0.0):
 //   1. MODUŁ CEN JEST DOMYŚLNIE WYŁĄCZONY. Po uruchomieniu skryptu nie leci
 //      ŻADNE zapytanie do sieci zewnętrznej — ani po kursy walut, ani po
 //      wykres Keepa, ani przez r.jina.ai. Sieć budzi się dopiero wtedy, gdy
@@ -80,35 +80,63 @@ const SCRIPT_LOGS_ENABLED = false;
 // ZACHOWANIE DOMYŚLNE, JEDNYM ZDANIEM: skrypt siedzi cicho w lewym dolnym
 // rogu, liczy przedmioty ze wszystkich otwartych kart, nie wchodzi do sieci
 // i nie pisze nic do konsoli.
+//
+// ---------------------------------------------------------------------
+//  WYDANIE 1.0.0 — PIERWSZE OFICJALNE
+// ---------------------------------------------------------------------
+//  Kod jest ten sam, co w 9.2.0 — zmieniła się numeracja i sposób pracy
+//  nad projektem. Od tego wydania:
+//
+//    * numeracja zaczyna się od nowa i trzyma SemVer (MAJOR.MINOR.PATCH),
+//      gdzie MAJOR rośnie wtedy i tylko wtedy, gdy zmienia się prefiks
+//      magazynu, czyli gdy liczniki nie przeniosą się na nową wersję;
+//    * TEN PLIK JEST ARTEFAKTEM, NIE ŹRÓDŁEM. Powstaje ze sklejenia
+//      modułów z katalogu src/ przez `npm run build`. Ręczne poprawki tutaj
+//      zostaną nadpisane przy następnym budowaniu, a CI je odrzuci;
+//    * pełny opis możliwości i konfiguracji: README.md w repozytorium,
+//      historia wydań: CHANGELOG.md.
+//
+//  Znaczniki `// ─── src/xx-nazwa.js ───` poniżej pokazują, z którego
+//  modułu pochodzi dany fragment — przydaje się przy czytaniu w konsoli.
+// ---------------------------------------------------------------------
 
 (function() {
     'use strict';
 
+    // ─── src/01-config.js ───
     // ==========================================
-    // 1. CORE CONSTANTS & CONFIGURATION
+    // 1. STAŁE PODSTAWOWE I KONFIGURACJA
     // ==========================================
     const CONFIG = {
-        SCRIPT_VERSION: '9.2.0',
+        SCRIPT_VERSION: '1.0.0',
         SCRIPT_NAME: 'Helper (Reactive)',
         /**
          * Prefiks koduje SCHEMAT MAGAZYNU, a nie numer buildu: wydania
          * poprawkowe (jak 8.4.1) nim nie ruszają, żeby nie zerować liczników
          * dla jednej poprawki parsera.
          *
-         * 9.2.0 prefiks ZMIENIA, i to świadomie: zmienił się zestaw linii
-         * (doszła linia 7), domyślne położenie okna oraz doszło pole
-         * `moduleEnabled` w karcie ceny. Gdyby prefiks został stary, zapisana
-         * konfiguracja z 9.1.x przykryłaby nowe wartości domyślne — czyli
-         * moduł cen wstałby WŁĄCZONY u każdego, kto już używał 9.1.x. A to
-         * jest dokładnie to, czego ta wersja ma nie robić.
+         * Czyli: 1.1.0 i 1.2.0 zostaną przy `v1_0_0`, dopóki nie zmieni się
+         * układ zapisywanych pól. Dopiero wtedy prefiks idzie na `v2_0_0`
+         * — i to samo w SemVer oznacza podniesienie MAJOR. Jedna reguła,
+         * zapisana w dwóch miejscach, i dlatego nie da się o niej zapomnieć:
+         *
+         *     prefiks się zmienia  <=>  wersja MAJOR rośnie
+         *     prefiks się zmienia  =>   liczniki i ustawienia startują od zera
+         *     a więc              =>   aktualizacja MIĘDZY zmianami, nie w trakcie
+         *
+         * Historia: ostatnia taka zmiana to wydanie 9.2.0 (poprzednia numeracja),
+         * gdzie doszła linia 7, nowe położenie okna i pole `moduleEnabled`.
+         * Gdyby prefiks wtedy został stary, zapisana konfiguracja przykryłaby
+         * nowe wartości domyślne i moduł cen wstałby WŁĄCZONY u każdego, kto
+         * już używał poprzedniej wersji — czyli dokładnie odwrotnie do zamiaru.
          */
-        SCRIPT_ID_PREFIX: 'statsHelper_v9_2_0_',
+        SCRIPT_ID_PREFIX: 'statsHelper_v1_0_0_',
         // Prefiksy poprzednich wersji: ich klucze są usuwane z localStorage przy
         // pierwszym uruchomieniu, żeby na maszynach ze stałą sesją nie zbierały
         // się śmieci.
         LEGACY_ID_PREFIXES: ['statsHelper_v8_0_0_', 'statsHelper_v8_1_0_', 'statsHelper_v8_2_0_',
                              'statsHelper_v8_3_0_', 'statsHelper_v8_4_0_', 'statsHelper_v8_5_0_',
-                             'statsHelper_v8_6_0_', 'statsHelper_v9_0_0_'],
+                             'statsHelper_v8_6_0_', 'statsHelper_v9_0_0_', 'statsHelper_v9_2_0_'],
         /**
          * Czy pisać cokolwiek do konsoli. Wartość bierze się z jednego miejsca
          * na górze pliku (SCRIPT_LOGS_ENABLED), a tutaj żyje dlatego, że
@@ -164,6 +192,16 @@ const SCRIPT_LOGS_ENABLED = false;
         STORAGE_KEY_SESSION_CONFIG: 'sessionConfig',
         STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS: 'allLocalTabConfigs',
         STORAGE_PREFIX_TAB_COUNTER: 'counter_',
+        /**
+         * Licznik przedmiotów, które pojechały NA SPRZEDAŻ — osobny klucz na każdą
+         * kartę, dokładnie jak licznik ogólny obok.
+         *
+         * Dlaczego osobno, a nie z dziennika wartości: dziennik napełnia się
+         * wyłącznie przy włączonym module cen, a procent sprzedaży ma działać
+         * w trybie domyślnym, czyli bez ani jednego zapytania do sieci. Kierunek
+         * ustala się z samego tekstu strony (patrz Routing) i sieci nie wymaga.
+         */
+        STORAGE_PREFIX_TAB_SOLD: 'sold_',
         SESSION_STORAGE_TAB_INSTANCE_ID_KEY: 'tabInstanceId',
         STORAGE_KEY_VALUE_LOG: 'valueLog',
 
@@ -237,7 +275,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * WHD ze znakiem plus). 6000 wpisów to ~1 MB JSON — granica, za którą
          * localStorage dzielony z samym TREX robi się ciasny.
          */
-        VALUE_LOG_MAX_ENTRIES: 90000,
+        VALUE_LOG_MAX_ENTRIES: 6000,
         // Archiwum przepisywane jest nie przy każdym wpisie, tylko paczką: przez
         // zmianę idą tysiące przedmiotów, a pełny rozbiór i złożenie 60 zmian
         // dla każdego z nich to czysta strata i na CPU, i na zapis do localStorage.
@@ -525,7 +563,7 @@ const SCRIPT_LOGS_ENABLED = false;
          *
          * Ten sam wzorzec, co w karcie ceny — nie trzeba było wymyślać drugiego.
          */
-        statsWindowPosition: { top: '', left: '11px', bottom: '2px' },
+        statsWindowPosition: { top: '', left: '20px', bottom: '8px' },
         statsWindowBgColorHex: '#ffffff',
         statsWindowBgAlpha: 0,
         priceCard: {
@@ -570,6 +608,42 @@ const SCRIPT_LOGS_ENABLED = false;
             showPrice: true,
             showRrp: true,
             showGraph: true,
+            /**
+             * CO POKAZAĆ W SAMEJ KARCIE — te same klocki, co przy liniach okna
+             * statystyk: wyłącznik na każdy element osobno.
+             *
+             * showAsin       — wiersz z kodem produktu;
+             * asinClickable  — czy ten kod jest linkiem do sklepu;
+             * showLatency    — ile milisekund zajęło zdobycie ceny.
+             */
+            showAsin: true,
+            /**
+             * DOMYŚLNIE WYŁĄCZONY, I TO JEST ŚWIADOMA ZMIANA WYGLĄDU (patrz
+             * CHANGELOG).
+             *
+             * Karta jest przezroczysta dla myszy — `pointer-events:none` — żeby
+             * kliknięcia dochodziły do interfejsu T-REX. Link z kodem produktu był
+             * JEDYNYM wyjątkiem od tej zasady, czyli jedynym miejscem, w którym
+             * karta przykrywała cudzy przycisk. Skoro karta ma nie przeszkadzać,
+             * ten wyjątek włącza się ręcznie.
+             *
+             * Przy `false` kod produktu jest zwykłym tekstem: bez `href`, bez
+             * podkreślenia, bez kursora i bez `pointer-events`. Nie ma czego
+             * kliknąć ani przypadkiem, ani celowo.
+             */
+            asinClickable: false,
+            /**
+             * Czas zdobycia ceny (np. „keepa-ocr · 96ms”). Do 1.0.0 dopisywał się
+             * ZAWSZE. To liczba dla kogoś, kto dobiera źródło ceny, a nie dla
+             * kogoś, kto pracuje — w zwykłej zmianie jest wyłącznie hałasem.
+             */
+            showLatency: false,
+            /**
+             * Krój pisma karty — ta sama lista, co w oknie statystyk
+             * (CONFIG.FONT_FAMILY_OPTIONS). Domyślnie ten sam, co w liniach:
+             * karta ma wyglądać jak reszta interfejsu, a nie jak osobny widżet.
+             */
+            fontFamily: 'default',
             // top puste = karta przyklejona do dołu; po przeciągnięciu trafia
             // tam współrzędna i przyklejenie znika.
             position: { left: '14px', top: '' },
@@ -577,19 +651,37 @@ const SCRIPT_LOGS_ENABLED = false;
             // 280px widać prawą część w naturalnej wielkości, a tam jest legenda
             // z cenami.
             width: 280,
-            fontSize: 30,
+            /**
+             * ROZMIAR CENY (1.0.0: 30 -> 16).
+             *
+             * Trzydzieści pikseli tłustą czcionką na nieprzezroczystym tle robiło
+             * z karty najbardziej krzykliwy element ekranu — a jest to element
+             * pomocniczy. Szesnaście to rozmiar bliski liniom okna statystyk
+             * (14 px), więc karta czyta się jak one, a nie jak baner.
+             */
+            fontSize: 16,
             // Tryb wyświetlania wykresu Keepa:
             //   'legend' — tylko blok z cenami (domyślnie)
             //   'right'  — prawa część wykresu w naturalnej wielkości
             //   'full'   — cały wykres wpisany w szerokość karty
             graphMode: 'legend',
             bgColorHex: '#0a0e18',
-            bgAlpha: 88,
+            /**
+             * TŁO KARTY (1.0.0: 88 -> 0, czyli przezroczyste).
+             *
+             * Nieprzezroczysty prostokąt z ramką i cieniem zasłaniał kawałek
+             * strony i wyglądał jak okno cudzej aplikacji. Przy zerowej
+             * przezroczystości znikają razem z nim ramka i cień (patrz
+             * applyStyle) — zostaje sam tekst, dokładnie jak w liniach 1-7.
+             * Komu potrzebne tło, podnosi ten suwak i wszystko wraca.
+             */
+            bgAlpha: 0,
         },
     };
 
+    // ─── src/02-i18n-strings.js ───
     // ==========================================
-    // 2. I18N DICTIONARIES
+    // 2. SŁOWNIKI I18N
     // ==========================================
     const LANG_STRINGS = {
         en: {
@@ -675,6 +767,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_section: 'Price Card', priceCard_enabled: 'Show price card',
             priceCard_showPrice: 'Show current price', priceCard_showRrp: 'Show list price (RRP)',
             priceCard_showGraph: 'Show Keepa chart',
+            priceCard_showAsin: 'Show product code (ASIN)',
+            priceCard_asinClickable: 'Product code is a link to the store',
+            priceCard_asinClickableHint: 'Off by default: a link is the only part of the card that catches the mouse and can cover a T-REX button.',
+            priceCard_showLatency: 'Show price lookup time (ms)',
             priceCard_width: 'Card width: ${value}px', priceCard_fontSize: 'Price size: ${value}px',
             priceCard_bg: 'Card background', priceCard_drag: 'Make Card Draggable',
             priceCard_dragActive: 'Card is Draggable (Click to Pin)', priceCard_resetPosition: 'Reset Card Position',
@@ -761,6 +857,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_section: 'Karta ceny', priceCard_enabled: 'Pokaż kartę ceny',
             priceCard_showPrice: 'Pokaż aktualną cenę', priceCard_showRrp: 'Pokaż cenę katalogową (RRP)',
             priceCard_showGraph: 'Pokaż wykres Keepa',
+            priceCard_showAsin: 'Pokaż kod produktu (ASIN)',
+            priceCard_asinClickable: 'Kod produktu jest linkiem do sklepu',
+            priceCard_asinClickableHint: 'Domyślnie wyłączone: link to jedyne miejsce karty, które łapie mysz i potrafi przykryć przycisk T-REX.',
+            priceCard_showLatency: 'Pokaż czas zdobycia ceny (ms)',
             priceCard_width: 'Szerokość karty: ${value}px', priceCard_fontSize: 'Rozmiar ceny: ${value}px',
             priceCard_bg: 'Tło karty', priceCard_drag: 'Uaktywnij przeciąganie karty',
             priceCard_dragActive: 'Karta przeciągalna (kliknij by przypiąć)', priceCard_resetPosition: 'Zresetuj pozycję karty',
@@ -847,6 +947,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_section: 'Карточка цены', priceCard_enabled: 'Показывать карточку цены',
             priceCard_showPrice: 'Показывать текущую цену', priceCard_showRrp: 'Показывать RRP',
             priceCard_showGraph: 'Показывать график Keepa',
+            priceCard_showAsin: 'Показывать код товара (ASIN)',
+            priceCard_asinClickable: 'Код товара — ссылка на магазин',
+            priceCard_asinClickableHint: 'По умолчанию выключено: ссылка — единственное место карточки, которое ловит мышь и может перекрыть кнопку T-REX.',
+            priceCard_showLatency: 'Показывать время получения цены (мс)',
             priceCard_width: 'Ширина карточки: ${value}px', priceCard_fontSize: 'Размер цены: ${value}px',
             priceCard_bg: 'Фон карточки', priceCard_drag: 'Включить перетаскивание карточки',
             priceCard_dragActive: 'Карточка перемещается (клик чтобы зафиксировать)', priceCard_resetPosition: 'Сбросить позицию карточки',
@@ -857,9 +961,9 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
-
+    // ─── src/03-utils.js ───
     // ==========================================
-    // 3. UTILITIES & DOM GENERATOR
+    // 3. NARZĘDZIA I GENERATOR DOM
     // ==========================================
     const Utils = {
         /**
@@ -965,7 +1069,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
         formatDuration(ms) {
             if (isNaN(ms) || ms <= 0) return I18n.get('notApplicable');
-            let s = Math.floor(ms / 1000); let m = Math.floor(s / 60); let h = Math.floor(m / 60);
+            let s = Math.floor(ms / 1000); let m = Math.floor(s / 60); const h = Math.floor(m / 60);
             s %= 60; m %= 60;
             const hS = I18n.get('hoursShort'), mS = I18n.get('minutesShort'), sS = I18n.get('secondsShort');
             if (h > 0) return `${h}${hS} ${String(m).padStart(2, '0')}${mS}`;
@@ -981,6 +1085,27 @@ const SCRIPT_LOGS_ENABLED = false;
          * rozjechałyby regułę. Dlatego każda liczba idąca do stylu przechodzi
          * tędy.
          */
+        /**
+         * Udział całkowity w procentach, z ODRZUCENIEM części ułamkowej.
+         *
+         * Odrzucenie, a nie zaokrąglenie, i to jest decyzja, a nie skrót: procent
+         * sprzedaży ma nie obiecywać więcej, niż zrobiono. Jeden przedmiot z 17 to
+         * 5,88%, a na ekranie ma stać 5% — zaokrąglone 6% wyglądałoby jak wynik
+         * lepszy od prawdziwego.
+         *
+         * MNOŻENIE IDZIE PRZED DZIELENIEM i to nie jest kosmetyka. `(29/100)*100`
+         * daje w arytmetyce zmiennoprzecinkowej 28.999999999999996, więc odrzucenie
+         * części ułamkowej dałoby 28% zamiast 29%. `29*100/100` jest dokładne.
+         *
+         * Zakres jest zamknięty w 0-100 nawet wtedy, gdy dane są niespójne:
+         * licznik da się poprawić ręcznie w dół, a licznik sprzedanych nie —
+         * bez tego ograniczenia dałoby się zobaczyć 150%.
+         */
+        percentFloor(part, whole) {
+            const p = Number(part), w = Number(whole);
+            if (!isFinite(p) || !isFinite(w) || w <= 0 || p <= 0) return 0;
+            return Math.max(0, Math.min(100, Math.floor(p * 100 / w)));
+        },
         clampNum(value, min, max, fallback) {
             const n = Number(value);
             if (!isFinite(n)) return fallback;
@@ -1024,8 +1149,9 @@ const SCRIPT_LOGS_ENABLED = false;
         return el;
     }
 
+    // ─── src/04-core-state.js ───
     // ==========================================
-    // 4. ARCHITECTURE: EventBus & Reactive State
+    // 4. ARCHITEKTURA: EventBus i stan reaktywny
     // ==========================================
     class EventBus {
         constructor() { this.listeners = {}; }
@@ -1114,12 +1240,15 @@ const SCRIPT_LOGS_ENABLED = false;
         });
     }
 
-    // Define Base State Structure
+    // Definicja podstawowej struktury stanu
     const baseState = {
         initialized: false,
         currentTabType: CONFIG.UNKNOWN_TAB_TYPE_KEY,
         currentTabInstanceId: null,
         tabCounters: {},
+        // Ile z policzonych przedmiotów pojechało na sprzedaż — na każdą kartę
+        // osobno, tak samo jak tabCounters. Mianownikiem procentu jest tabCounters.
+        tabSold: {},
         userConfig: {
             language: CONFIG.DEFAULT_LANGUAGE,
             // Sklep Amazon: link z ASIN, rynek wykresu Keepa i waluta dziennika.
@@ -1160,8 +1289,9 @@ const SCRIPT_LOGS_ENABLED = false;
             && store.localTabConfig.priceCard.moduleEnabled === true;
     }
 
+    // ─── src/05-i18n-runtime.js ───
     // ==========================================
-    // 5. MANAGERS
+    // 5. MENEDŻERY
     // ==========================================
 
     const I18n = {
@@ -1189,6 +1319,7 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
+    // ─── src/06-storage.js ───
     const StorageManager = {
         // Pamięć ostatniej zapisanej wartości dla każdego klucza. Potrzebna, żeby
         // nie pisać do localStorage tego samego: zbędny zapis rodzi zdarzenie
@@ -1199,10 +1330,45 @@ const SCRIPT_LOGS_ENABLED = false;
 
         getKey(key) { return `${CONFIG.SCRIPT_ID_PREFIX}${key}`; },
 
+        /**
+         * Zapis z odnotowaniem wartości — JEDYNE miejsce, z którego skrypt pisze
+         * do localStorage poza dziennikiem wartości i kursami.
+         *
+         * ZAPIS MA PRAWO NIE DOJŚĆ i to nie jest sytuacja teoretyczna:
+         * localStorage tej domeny dzielimy z samym TREX, więc kwota potrafi się
+         * skończyć nie z naszej winy. Do tego część konfiguracji przeglądarki
+         * (zablokowany magazyn dla witryny) sprawia, że setItem rzuca wyjątek
+         * przy każdym wywołaniu.
+         *
+         * Wcześniej wyjątek szedł stąd w górę nieprzechwycony. Skutek był
+         * nieproporcjonalny do przyczyny: saveState() woła się w Main.init(),
+         * więc przy pełnym magazynie catch w init() rozbierał całość i skrypt
+         * NIE WSTAWAŁ WCALE. Licznik, który doskonale policzyłby zmianę
+         * w pamięci, nie pokazywał się na ekranie.
+         *
+         * Teraz nieudany zapis jest zdarzeniem zwykłym: wraca `false`, skrypt
+         * pracuje dalej na stanie w pamięci, a człowiek traci tylko przeniesienie
+         * liczników przez F5 — czyli dokładnie tyle, ile naprawdę zepsuł pełny
+         * magazyn.
+         *
+         * Notatka `_lastWritten` stawia się DOPIERO PO UDANYM zapisie i to jest
+         * druga połowa tej poprawki. Gdy stała przed nim, po nieudanym zapisie
+         * pamięć twierdziła, że wartość leży w magazynie, i deduplikacja
+         * odrzucała następną, już możliwą próbę zapisania tego samego.
+         *
+         * @returns {boolean} czy wartość naprawdę trafiła do magazynu.
+         */
         write(key, value) {
             if (this._lastWritten[key] === value) return false;
+            try {
+                localStorage.setItem(key, value);
+            } catch (e) {
+                delete this._lastWritten[key];
+                Utils.error(`Zapis do magazynu nie powiódł się (${key}): ${e.name}. `
+                          + 'Skrypt pracuje dalej, ale stan nie przeżyje przeładowania strony.');
+                return false;
+            }
             this._lastWritten[key] = value;
-            localStorage.setItem(key, value);
             return true;
         },
         saveState() {
@@ -1211,7 +1377,7 @@ const SCRIPT_LOGS_ENABLED = false;
             this.write(this.getKey(CONFIG.STORAGE_KEY_SESSION_CONFIG), JSON.stringify(store.sessionConfig));
 
             const allLocalsKey = this.getKey(CONFIG.STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS);
-            let allLocals = {};
+            let allLocals;
             try { allLocals = JSON.parse(localStorage.getItem(allLocalsKey) || "{}"); } catch (e) { allLocals = {}; }
             if (store.currentTabInstanceId) {
                 allLocals[store.currentTabInstanceId] = store.localTabConfig;
@@ -1231,6 +1397,10 @@ const SCRIPT_LOGS_ENABLED = false;
 
         saveCounter(tabKey, count) {
             this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER + tabKey), String(count));
+        },
+        /** Licznik sprzedanych — mianownikiem procentu jest zwykły licznik obok. */
+        saveSold(tabKey, count) {
+            this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD + tabKey), String(count));
         },
         removeCounter(tabKey) {
             const key = this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER + tabKey);
@@ -1293,11 +1463,15 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
 
                 const prefix = this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER);
+                const soldPrefix = this.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD);
                 for (let i = 0; i < localStorage.length; i++) {
                     const key = localStorage.key(i);
                     if (key && key.startsWith(prefix)) {
                         const tabKey = key.substring(prefix.length);
                         store.tabCounters[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                    } else if (key && key.startsWith(soldPrefix)) {
+                        const tabKey = key.substring(soldPrefix.length);
+                        store.tabSold[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
                     }
                 }
             } catch (e) { Utils.error("Storage load failed", e); }
@@ -1326,6 +1500,12 @@ const SCRIPT_LOGS_ENABLED = false;
                     // reset liczników przez sąsiednią kartę przy zmianie zmiany.
                     const val = parseInt(e.newValue, 10) || 0;
                     if (store.tabCounters[tabKey] !== val) store.tabCounters[tabKey] = val;
+                } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TAB_SOLD)) {
+                    // Licznik sprzedanych sąsiedniej karty — potrzebny liniom 2 i 7,
+                    // które liczą procent po WSZYSTKICH kartach naraz.
+                    const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_SOLD.length);
+                    const val = parseInt(e.newValue, 10) || 0;
+                    if (store.tabSold[tabKey] !== val) store.tabSold[tabKey] = val;
                 } else if (!store.uiFlags.isSettingsPanelVisible) {
                     this.debouncedLoad();
                 }
@@ -1335,6 +1515,7 @@ const SCRIPT_LOGS_ENABLED = false;
         debouncedLoad: Utils.debounce(function() { StorageManager.loadAll(true); }, 300)
     };
 
+    // ─── src/07-session-shift.js ───
     // ==========================================
     // 5b. SESSION RESET (reset między zmianami)
     // ==========================================
@@ -1366,15 +1547,22 @@ const SCRIPT_LOGS_ENABLED = false;
             Utils.log(`[RESET] Kasowanie danych o przedmiotach. Powód: ${reason}`);
             this.lastReset = { kind, reason };
 
-            const prefix = StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER);
+            // Licznik sprzedanych żyje dokładnie tyle samo, co zwykły licznik:
+            // procent sprzedaży opisuje JEDNĄ zmianę, więc zostawienie go przez
+            // granicę zmiany dałoby liczbę z cudzego dnia.
+            const prefixes = [
+                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER),
+                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD),
+            ];
             Object.keys(localStorage)
-                .filter(k => k.startsWith(prefix))
+                .filter(k => prefixes.some(p => k.startsWith(p)))
                 .forEach(k => {
                     delete StorageManager._lastWritten[k];
                     localStorage.removeItem(k);
                 });
 
             Object.keys(store.tabCounters).forEach(k => { store.tabCounters[k] = 0; });
+            Object.keys(store.tabSold).forEach(k => { store.tabSold[k] = 0; });
 
             // 8.4.0: dziennik wartości żyje dokładnie tyle samo, co liczniki —
             // to ta sama ewidencja, tylko w pieniądzach. Podsumowania odchodzącej
@@ -1456,7 +1644,7 @@ const SCRIPT_LOGS_ENABLED = false;
             const nEnd = ST.NIGHT_SHIFT_END_H * 60 + ST.NIGHT_SHIFT_END_M;
 
             let sType = null;
-            let sTime = new Date(now);
+            const sTime = new Date(now);
 
             if (minutes >= dStart && minutes < dEnd) {
                 sType = 'day'; sTime.setHours(CST.DAY.H, CST.DAY.M, 0, 0);
@@ -1515,7 +1703,7 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!store.sessionConfig.shiftCalculatedStartTime) return { workedMs: 0, lunchMs: 0 };
             const now = Date.now();
             const start = store.sessionConfig.shiftCalculatedStartTime;
-            let elapsed = Math.max(0, now - start);
+            const elapsed = Math.max(0, now - start);
             let lunchMs = 0;
 
             const idx = store.sessionConfig.selectedLunchIndex;
@@ -1523,8 +1711,8 @@ const SCRIPT_LOGS_ENABLED = false;
                 const opt = CONFIG.LUNCH_OPTIONS_BASE[idx];
                 const shiftDate = new Date(start);
 
-                let lStartObj = Utils.timeStringToDate(opt.start, shiftDate, opt.type==='night' && parseInt(opt.start.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
-                let lEndObj = Utils.timeStringToDate(opt.end, shiftDate, opt.type==='night' && parseInt(opt.end.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
+                const lStartObj = Utils.timeStringToDate(opt.start, shiftDate, opt.type==='night' && parseInt(opt.start.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
+                const lEndObj = Utils.timeStringToDate(opt.end, shiftDate, opt.type==='night' && parseInt(opt.end.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
 
                 if (lEndObj < lStartObj) lEndObj.setDate(lEndObj.getDate() + 1);
 
@@ -1536,6 +1724,7 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
+    // ─── src/08-drag.js ───
     /**
      * Fabryka przeciągania.
      *
@@ -1615,8 +1804,9 @@ const SCRIPT_LOGS_ENABLED = false;
         savePosition: (p) => { store.localTabConfig.priceCard.position = p; },
     });
 
+    // ─── src/09-ui-css.js ───
     // ==========================================
-    // 6. UI & RENDERERS
+    // 6. INTERFEJS I RENDERERY
     // ==========================================
     const CSSManager = {
         init() {
@@ -1671,6 +1861,7 @@ const SCRIPT_LOGS_ENABLED = false;
                        'line4_lunchInfo', 'line5_realTimeClock', 'line6_valueSum',
                        'line7_compact'];
 
+    // ─── src/10-ui-window.js ───
     const StatsWindowRenderer = {
         init() {
             this.el = h('div', {
@@ -1702,7 +1893,12 @@ const SCRIPT_LOGS_ENABLED = false;
             // 8.3.0: uiFlags tu nie wchodzą — okno statystyk od nich nie zależy,
             // a ruszane są przy każdym przedmiocie. Raz na sekundę linia i tak
             // przerysowuje się z timera poniżej.
-            onStorePaths(['tabCounters', 'sessionConfig', 'userConfig', 'localTabConfig'],
+            // tabSold obok tabCounters, bo zmienia się NIEZALEŻNIE od niego:
+            // przedmiot zalicza się w jednym skanie, a kod sortowania potrafi
+            // przyjść w następnym. Bez tej ścieżki procent czekałby na takt
+            // timera, czyli do sekundy — widać by to było jako liczbę, która
+            // „nie nadąża” za ekranem.
+            onStorePaths(['tabCounters', 'tabSold', 'sessionConfig', 'userConfig', 'localTabConfig'],
                          () => this.renderContent());
             onStorePaths(['localTabConfig.statsWindowPosition'], () => this.applyPosition());
             bus.on('valueLog:changed', () => this.renderContent());
@@ -1755,6 +1951,68 @@ const SCRIPT_LOGS_ENABLED = false;
             }
         },
 
+        /**
+         * Składanie linii 6 — bilansu zmiany.
+         *
+         * Wyniesione z renderContent() RAZEM z wywołaniem ValueLog.totals():
+         * przy wyłączonej linii nie ma po co przechodzić po całym dzienniku
+         * i przeliczać każdej pozycji po kursie, skoro wynik nie trafi na ekran.
+         * Linia 6 jest jedynym odbiorcą totals(), więc nic innego tego przebiegu
+         * nie potrzebuje.
+         */
+        renderValueSum() {
+            const vt = ValueLog.totals();
+            const l6 = this.lines.line6_valueSum;
+            const cfg6 = store.localTabConfig.linesConfig.line6_valueSum;
+            l6.innerHTML = '';
+            const a6 = Math.max(0, Math.min(100, Number(cfg6.alpha))) / 100;
+            const tone = (hex, k = 1) => `rgba(${Utils.hexToRgb(hex)}, ${(a6 * k).toFixed(3)})`;
+            const GREEN = tone('#7CFFA8'), RED = tone('#FF9A9A');
+            const WARN = tone('#FFC46B'), DIM = tone(cfg6.colorHex, 0.85);
+            const piece = (text, color, bold) => {
+                const sp = h('span', { textContent: text });
+                if (color) sp.style.color = color;
+                if (bold) sp.style.fontWeight = '700';
+                return sp;
+            };
+            const money = (v) => v.toFixed(2);
+
+            l6.appendChild(piece(`+${money(vt.sold)}`, GREEN));
+            l6.appendChild(document.createTextNode(' '));
+            l6.appendChild(piece(`-${money(vt.unsold)}`, RED));
+            l6.appendChild(document.createTextNode(' = '));
+            l6.appendChild(piece(`${vt.net >= 0 ? '' : '-'}${money(Math.abs(vt.net))} €`,
+                                 vt.net >= 0 ? GREEN : RED, true));
+            l6.appendChild(document.createTextNode('  '));
+            l6.appendChild(piece(I18n.get('statsLine6_items', { n: vt.count }), DIM));
+            const pending = vt.undetermined + vt.unpriced + vt.noRate;
+            if (pending) {
+                l6.appendChild(document.createTextNode(' '));
+                l6.appendChild(piece(I18n.get('statsLine6_undet', { n: pending }), WARN));
+            }
+        },
+
+        /**
+         * Czy linia jest w ogóle widoczna.
+         *
+         * Widocznością steruje wyłącznie CSS (zmienna `--sh-<klucz>-display`),
+         * więc do tej poprawki render szedł bezwarunkowo: raz na sekundę składały
+         * się linie, których nikt nie ogląda. Przy ustawieniach domyślnych
+         * widoczna jest JEDNA linia z siedmiu, a każdy takt i tak tworzył komplet
+         * węzłów i przechodził po całym dzienniku wartości.
+         *
+         * Brak wpisu w konfiguracji znaczy „pokaż”, a nie „ukryj”: nowa linia
+         * dodana bez wartości domyślnej ma się pojawić, a nie zniknąć po cichu.
+         *
+         * Zmiana `visible` idzie przez onStorePaths(['localTabConfig']), czyli
+         * przez tę samą subskrypcję, która wywołuje renderContent() — włączona
+         * linia zapełnia się natychmiast, a nie dopiero przy następnym takcie.
+         */
+        isLineVisible(key) {
+            const cfg = store.localTabConfig.linesConfig[key];
+            return !cfg || cfg.visible !== false;
+        },
+
         renderContent() {
             const { workedMs } = ShiftManager.getWorkTime();
             const hWorked = workedMs / 3600000;
@@ -1765,16 +2023,43 @@ const SCRIPT_LOGS_ENABLED = false;
             // Teraz funkcja zwraca zawsze samą liczbę.
             const getIph = (c) => hWorked > 0.0027 ? (c / hWorked).toFixed(1) : '0.0';
 
-            // Line 1: Current Tab
+            /**
+             * PROCENT SPRZEDAŻY (koniec każdej z linii 1, 2 i 7).
+             *
+             * Liczba od 0 do 100 ze znakiem procentu, zawsze na samym końcu linii.
+             * Mianownikiem jest licznik przedmiotów, a nie suma sprzedanych
+             * i niesprzedanych — dzięki temu przedmiot o nieustalonym kierunku
+             * obniża procent zamiast znikać z rachunku, a trzy niesprzedaże na
+             * początku zmiany dają uczciwe 0%, a nie puste miejsce.
+             *
+             * Tekstu nie ma w słownikach celowo: to liczba i znak, identyczne we
+             * wszystkich trzech językach.
+             */
+            const cSold = store.tabSold[cid] || 0;
+
+            // Linia 1: bieżąca zakładka
             this.lines.line1_currentTab.textContent = I18n.get('statsLine1_current', {
                 tabName: I18n.getTabName(cid), itemsPerHour: getIph(cCount), statsPerHourUnit: I18n.get('statsPerHourUnit'),
                 count: cCount, completedUnit: I18n.get('completedUnit'), inUnit: I18n.get('inUnit'),
                 workTimeFormatted: Utils.formatDuration(workedMs)
-            });
+            }) + ` ${Utils.percentFloor(cSold, cCount)}%`;
 
-            // Line 2: Global
+            /**
+             * Linia 2: podsumowanie globalne.
+             *
+             * Pętla po kartach chodzi ZAWSZE, bo `gTotal` potrzebuje go także
+             * linia 7, a obie muszą pokazywać tę samą liczbę: dwa niezależne
+             * przebiegi prędzej czy później by się rozjechały. Pod warunkiem
+             * widoczności stoi natomiast SKŁADANIE WĘZŁÓW — to ono kosztuje,
+             * a nie przejście po trzech kluczach.
+             */
+            const showLine2 = this.isLineVisible('line2_globalSummary');
+            // Czyścimy ZAWSZE, także przy wyłączonej linii: inaczej po jej
+            // schowaniu w węźle zostawałaby ostatnia treść — niewidoczna,
+            // ale wciąż wisząca w DOM i myląca przy diagnostyce.
             this.lines.line2_globalSummary.innerHTML = '';
             let gTotal = 0;
+            let gSold = 0;
             const allKeys =[...Object.keys(CONFIG.KNOWN_TAB_TYPES), ...Object.keys(store.userConfig.customTabSettings)];
             const fragments =[];
             const line2Cfg = store.localTabConfig.linesConfig.line2_globalSummary;
@@ -1787,6 +2072,8 @@ const SCRIPT_LOGS_ENABLED = false;
 
                 if (included && active) {
                     gTotal += count;
+                    gSold += store.tabSold[k] || 0;
+                    if (!showLine2) return;
                     const text = I18n.get('statsLine2_global_tab_format', {
                         tabName: I18n.getTabName(k).substring(0, 10),
                         itemsPerHour: getIph(count), statsPerHourUnit: I18n.get('statsPerHourUnit'), count: count
@@ -1812,16 +2099,16 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
             });
 
-            if (fragments.length > 0) {
+            if (showLine2 && fragments.length > 0) {
                 fragments.forEach(f => this.lines.line2_globalSummary.appendChild(f));
                 this.lines.line2_globalSummary.appendChild(document.createTextNode(
                     I18n.get('statsLine2_global_total_format', {
                         totalItemsPerHour: getIph(gTotal), statsPerHourUnit: I18n.get('statsPerHourUnit'), totalCount: gTotal
-                    })
+                    }) + ` ${Utils.percentFloor(gSold, gTotal)}%`
                 ));
             }
 
-            // Line 3: Shift
+            // Linia 3: zmiana
             const sType = store.sessionConfig.shiftType;
             const sStart = store.sessionConfig.shiftCalculatedStartTime ? Utils.formatTime(new Date(store.sessionConfig.shiftCalculatedStartTime), false, ':') : I18n.get('notApplicable');
             this.lines.line3_shiftInfo.textContent = I18n.get('statsLine3_shift', {
@@ -1829,7 +2116,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 shiftStartTime: sStart
             });
 
-            // Line 4: Lunch
+            // Linia 4: przerwa
             let lStr = I18n.get('notApplicable');
             const lIdx = store.sessionConfig.selectedLunchIndex;
             if (lIdx !== null && CONFIG.LUNCH_OPTIONS_BASE[lIdx]) {
@@ -1843,7 +2130,7 @@ const SCRIPT_LOGS_ENABLED = false;
             }
             this.lines.line4_lunchInfo.textContent = lStr;
 
-            // Line 5: Time
+            // Linia 5: zegar
             this.lines.line5_realTimeClock.textContent = I18n.get('statsLine5_clock', { currentTime: Utils.formatTime(new Date(), true, ':') });
 
             /**
@@ -1874,35 +2161,12 @@ const SCRIPT_LOGS_ENABLED = false;
              * 9.2.0: linia domyślnie wyłączona — przy wyłączonym module cen nie
              * ma czego sumować.
              */
-            const vt = ValueLog.totals();
-            const l6 = this.lines.line6_valueSum;
-            const cfg6 = store.localTabConfig.linesConfig.line6_valueSum;
-            l6.innerHTML = '';
-            const a6 = Math.max(0, Math.min(100, Number(cfg6.alpha))) / 100;
-            const tone = (hex, k = 1) => `rgba(${Utils.hexToRgb(hex)}, ${(a6 * k).toFixed(3)})`;
-            const GREEN = tone('#7CFFA8'), RED = tone('#FF9A9A');
-            const WARN = tone('#FFC46B'), DIM = tone(cfg6.colorHex, 0.85);
-            const piece = (text, color, bold) => {
-                const sp = h('span', { textContent: text });
-                if (color) sp.style.color = color;
-                if (bold) sp.style.fontWeight = '700';
-                return sp;
-            };
-            const money = (v) => v.toFixed(2);
-
-            l6.appendChild(piece(`+${money(vt.sold)}`, GREEN));
-            l6.appendChild(document.createTextNode(' '));
-            l6.appendChild(piece(`-${money(vt.unsold)}`, RED));
-            l6.appendChild(document.createTextNode(' = '));
-            l6.appendChild(piece(`${vt.net >= 0 ? '' : '-'}${money(Math.abs(vt.net))} €`,
-                                 vt.net >= 0 ? GREEN : RED, true));
-            l6.appendChild(document.createTextNode('  '));
-            l6.appendChild(piece(I18n.get('statsLine6_items', { n: vt.count }), DIM));
-            const pending = vt.undetermined + vt.unpriced + vt.noRate;
-            if (pending) {
-                l6.appendChild(document.createTextNode(' '));
-                l6.appendChild(piece(I18n.get('statsLine6_undet', { n: pending }), WARN));
-            }
+            // Linia 6: przy wyłączonej nie ma po co przechodzić po całym
+            // dzienniku i przeliczać pozycji po kursie — wynik i tak nie trafi
+            // na ekran. Czyszczenie zostaje bezwarunkowe, z tego samego powodu
+            // co w linii 2.
+            if (this.isLineVisible('line6_valueSum')) this.renderValueSum();
+            else this.lines.line6_valueSum.innerHTML = '';
 
             /**
              * Line 7 — TRYB ZWIĘZŁY (9.2.0).
@@ -1927,10 +2191,12 @@ const SCRIPT_LOGS_ENABLED = false;
              * składania HTML — kolor i rozmiar ustawia CSS ze zmiennych
              * --sh-line7_compact-*.
              */
-            this.lines.line7_compact.textContent = `${getIph(gTotal)} ${gTotal}`;
+            this.lines.line7_compact.textContent =
+                `${getIph(gTotal)} ${gTotal} ${Utils.percentFloor(gSold, gTotal)}%`;
         }
     };
 
+    // ─── src/11-ui-builder.js ───
     const UIBuilder = {
         row(labelStr, ...controls) {
             return h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: '10px', flexWrap: 'nowrap' } },
@@ -1988,6 +2254,7 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
+    // ─── src/12-ui-settings.js ───
     const SettingsPanel = {
         init() {
             this.el = h('div', {
@@ -2039,7 +2306,7 @@ const SCRIPT_LOGS_ENABLED = false;
             this.el.innerHTML = '';
             this.el.appendChild(h('h2', { textContent: I18n.get('settingsPanelTitle'), style: { textAlign: 'center', marginTop: '0' } }));
 
-            // 1. General
+            // 1. Ogólne
             const secGen = UIBuilder.section(I18n.get('section_general'));
             secGen.appendChild(UIBuilder.row(I18n.get('language'), UIBuilder.select(CONFIG.AVAILABLE_LANGUAGES.map(l => ({ value: l.code, text: l.name })), store.userConfig.language, v => { store.userConfig.language = v; this.rerender(); })));
             // 8.1.0: było localStorage.clear() — to kasowało magazyn CAŁEJ domeny,
@@ -2063,7 +2330,7 @@ const SCRIPT_LOGS_ENABLED = false;
             }, { background: '#e0a800', color: '#141414', width: '100%', marginTop: '5px' }));
             this.el.appendChild(secGen);
 
-            // 2. Custom Tab Naming
+            // 2. Nazwy własne zakładek
             if (store.currentTabType === CONFIG.UNKNOWN_TAB_TYPE_KEY) {
                 const secCur = UIBuilder.section(I18n.get('section_currentTab', { tabInstanceId: store.currentTabInstanceId.substring(0, 8) + '...' }));
                 const cust = store.userConfig.customTabSettings[store.currentTabInstanceId] || { displayName: store.currentTabInstanceId, includeInGlobal: true };
@@ -2081,13 +2348,13 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.el.appendChild(secCur);
             }
 
-            // 3. Visual Aids
+            // 3. Efekty wizualne
             const secVis = UIBuilder.section(I18n.get('section_visualAids', { tabName: I18n.getTabName(store.currentTabInstanceId) }));
             secVis.appendChild(UIBuilder.row('', ...UIBuilder.slider(0, CONFIG.MAX_PAGE_OVERLAY_OPACITY_PERCENT, store.localTabConfig.pageOverlayOpacity, v => store.localTabConfig.pageOverlayOpacity = v, v => I18n.get('overlayOpacity', { value: v }))));
             secVis.appendChild(UIBuilder.row('', UIBuilder.checkbox(I18n.get('showPageIndicator'), store.localTabConfig.pageIndicatorTextVisible, v => store.localTabConfig.pageIndicatorTextVisible = v)));
             this.el.appendChild(secVis);
 
-            // 4. Stats Window Styling
+            // 4. Stylizacja okna statystyk
             const secWin = UIBuilder.section(I18n.get('section_statsWindow'));
 
             secWin.appendChild(UIBuilder.row(I18n.get('windowBgSettings'), UIBuilder.colorPickerWithAlpha(
@@ -2185,7 +2452,7 @@ const SCRIPT_LOGS_ENABLED = false;
             }, { width: '100%', marginTop: '5px' }));
             this.el.appendChild(secWin);
 
-            // 5. Global Stats & Manual Counters
+            // 5. Statystyki globalne i liczniki ręczne
             const secGlob = UIBuilder.section(I18n.get('section_globalStats'));
             Object.values(CONFIG.KNOWN_TAB_TYPES).forEach(t => {
                 const row = h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: '5px', gap: '10px' } });
@@ -2196,14 +2463,14 @@ const SCRIPT_LOGS_ENABLED = false;
             });
             this.el.appendChild(secGlob);
 
-            // 6. Keyboard Shortcuts
+            // 6. Skróty klawiszowe
             const secKeys = UIBuilder.section(I18n.get('section_keyboardShortcuts'));
             const keyOpts = CONFIG.AVAILABLE_SHORTCUT_KEYS.map(k => ({ value: k.code, text: I18n.get(k.name_key) }));
             secKeys.appendChild(UIBuilder.row(I18n.get('incrementKey'), UIBuilder.select(keyOpts, store.userConfig.keyboardShortcuts.INCREMENT, v => store.userConfig.keyboardShortcuts.INCREMENT = v)));
             secKeys.appendChild(UIBuilder.row(I18n.get('decrementKey'), UIBuilder.select(keyOpts, store.userConfig.keyboardShortcuts.DECREMENT, v => store.userConfig.keyboardShortcuts.DECREMENT = v)));
             this.el.appendChild(secKeys);
 
-            // 7. Auto-Increment
+            // 7. Autoinkrementacja
             const secAuto = UIBuilder.section(I18n.get('section_autoIncrement'));
             secAuto.appendChild(UIBuilder.row('', ...UIBuilder.slider(CONFIG.MIN_TRIGGER_DEBOUNCE_MS, CONFIG.MAX_TRIGGER_DEBOUNCE_MS, store.userConfig.triggerMutationDebounceMs, v => store.userConfig.triggerMutationDebounceMs = v, v => I18n.get('scanIntervalAutoIncrement', { value: v }))));
             this.el.appendChild(secAuto);
@@ -2306,6 +2573,26 @@ const SCRIPT_LOGS_ENABLED = false;
                     I18n.get('priceCard_showRrp'), pc.showRrp,
                     v => store.localTabConfig.priceCard.showRrp = v)));
 
+                // Zawartość karty — wyłącznik na każdy element osobno, tak samo
+                // jak przy liniach okna statystyk.
+                secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
+                    I18n.get('priceCard_showAsin'), pc.showAsin !== false,
+                    v => { store.localTabConfig.priceCard.showAsin = v; this.rerender(); })));
+                if (pc.showAsin !== false) {
+                    secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
+                        I18n.get('priceCard_asinClickable'), pc.asinClickable === true,
+                        v => store.localTabConfig.priceCard.asinClickable = v)));
+                    secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_asinClickableHint')));
+                }
+                secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
+                    I18n.get('priceCard_showLatency'), pc.showLatency === true,
+                    v => store.localTabConfig.priceCard.showLatency = v)));
+
+                secPrice.appendChild(UIBuilder.row(I18n.get('fontFamily'), UIBuilder.select(
+                    Object.keys(CONFIG.FONT_FAMILY_OPTIONS).map(k => ({ value: k, text: I18n.get(`fontFamily_${k}`) })),
+                    pc.fontFamily || 'default',
+                    v => store.localTabConfig.priceCard.fontFamily = v)));
+
                 // Dolna granica jest celowo niska: w trybie przycięcia wąska
                 // karta nadal jest użyteczna — legenda Keepa nigdzie nie znika.
                 secPrice.appendChild(UIBuilder.row('', ...UIBuilder.slider(
@@ -2313,8 +2600,10 @@ const SCRIPT_LOGS_ENABLED = false;
                     v => store.localTabConfig.priceCard.width = v,
                     v => I18n.get('priceCard_width', { value: v }))));
 
+                // Dolna granica zeszła z 14 na 11: karta ma dać się zrównać
+                // z liniami okna statystyk, a te schodzą niżej.
                 secPrice.appendChild(UIBuilder.row('', ...UIBuilder.slider(
-                    14, 48, pc.fontSize,
+                    11, 48, pc.fontSize,
                     v => store.localTabConfig.priceCard.fontSize = v,
                     v => I18n.get('priceCard_fontSize', { value: v }))));
 
@@ -2381,14 +2670,14 @@ const SCRIPT_LOGS_ENABLED = false;
 
             }   // koniec gałęzi „moduł cen włączony”
 
-            // 8. Lunch Selection
+            // 8. Wybór przerwy
             const secLunch = UIBuilder.section(I18n.get('section_lunchSelection'));
             const sType = store.sessionConfig.shiftType || 'day';
             const lOpts = CONFIG.LUNCH_OPTIONS_BASE.map((o, i) => ({ value: i, text: I18n.get(o.text_key), type: o.type })).filter(o => o.type === sType);
             secLunch.appendChild(UIBuilder.row('', UIBuilder.select(lOpts, store.sessionConfig.selectedLunchIndex, v => store.sessionConfig.selectedLunchIndex = parseInt(v))));
             this.el.appendChild(secLunch);
 
-            // Close
+            // Zamknięcie
             this.el.appendChild(h('hr', { style: { margin: '20px 0' } }));
             this.el.appendChild(UIBuilder.button(I18n.get('settings_applyAndCloseButton'), () => this.toggle(), { width: '100%', padding: '10px', fontSize: '1.1em' }));
 
@@ -2396,7 +2685,8 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
-    // Overlay & Indicator Renderer
+    // ─── src/13-ui-visuals.js ───
+    // Renderer przyciemnienia i wskaźnika
     const VisualsRenderer = {
         init() {
             // 8.1.0: id jest obowiązkowe — po nim AutoTrigger odróżnia własne
@@ -2472,7 +2762,7 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
-
+    // ─── src/14-marketplace.js ───
     /**
      * Bieżący sklep Amazon (8.5.0). Jedno miejsce prawdy dla linku, wykresu
      * i waluty dziennika — patrz CONFIG.MARKETPLACES.
@@ -2503,6 +2793,7 @@ const SCRIPT_LOGS_ENABLED = false;
         return `https://${marketplace(key).host}/dp/${encodeURIComponent(asin)}`;
     }
 
+    // ─── src/15-price-ocr.js ───
     // ==========================================
     // 6c. ODCZYT CENY Z OBRAZKA KEEPA (8.4.0)
     // ==========================================
@@ -2627,7 +2918,9 @@ const SCRIPT_LOGS_ENABLED = false;
             try {
                 return ctx.getImageData(0, 0, c.width, c.height);
             } catch (e) {
-                throw new Error('canvas skażony — obrazek bez crossOrigin');
+                // cause zachowuje pierwotny SecurityError: bez niego w konsoli zostaje
+                // sam nasz komunikat i nie widać, co dokładnie zablokowała przeglądarka.
+                throw new Error('canvas skażony — obrazek bez crossOrigin', { cause: e });
             }
         },
 
@@ -2868,6 +3161,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/16-value-log.js ───
     // ==========================================
     // 6e. DZIENNIK WARTOŚCI (8.4.0)
     // ==========================================
@@ -2956,6 +3250,39 @@ const SCRIPT_LOGS_ENABLED = false;
             return null;
         },
 
+        /**
+         * Czy po scaleniu mamy coś, czego we wspólnym dzienniku nie ma.
+         *
+         * Wcześniej rozstrzygała o tym sama DŁUGOŚĆ: `merged.length >
+         * shared.entries.length`. Gubiło to przypadek, w którym liczba pozycji
+         * się zgadza, a różni się ich TREŚĆ — czyli dokładnie skutek wyścigu
+         * przy odczycie i zapisie wspólnego klucza (localStorage nie daje tu
+         * żadnej atomowości):
+         *
+         *   1. stawiamy kierunek przedmiotu, save() czyta wspólny dziennik;
+         *   2. sąsiednia karta zdążyła w tej szparze zapisać swoją, starszą
+         *      wersję tej samej pozycji;
+         *   3. dostajemy zdarzenie `storage`, scalamy — nasza wersja wygrywa
+         *      po `updated`, ale długość się zgadza, więc dopisanie się nie
+         *      planowało i we wspólnym kluczu zostawała wersja starsza.
+         *
+         * Naprawiało się to samo przy następnym przedmiocie (save() scala),
+         * więc realnie zagrożony był wyłącznie OSTATNI przedmiot zmiany — ten,
+         * po którym nic już nie zapisywało. Cicho i akurat na podsumowaniu.
+         *
+         * Teraz porównanie idzie po id i po `updated`: to ta sama miara, którą
+         * rozstrzyga _merge(), więc obie strony wymiany widzą tak samo.
+         */
+        _aheadOfShared(merged, sharedEntries) {
+            const theirs = new Map();
+            for (const e of sharedEntries) if (e && e.id) theirs.set(e.id, e.updated || 0);
+            return merged.some(e => {
+                if (!e || !e.id) return false;
+                if (!theirs.has(e.id)) return true;
+                return (e.updated || 0) > theirs.get(e.id);
+            });
+        },
+
         /** Scalenie dwóch list po id; przy konflikcie wygrywa świeższy updated. */
         _merge(base, mine) {
             const map = new Map();
@@ -3009,7 +3336,7 @@ const SCRIPT_LOGS_ENABLED = false;
             }
             const before = this.entries.length;
             const merged = this._merge(shared.entries, this.entries);
-            const haveOurOwn = merged.length > shared.entries.length;
+            const haveOurOwn = this._aheadOfShared(merged, shared.entries);
             this.entries = merged;
             if (shared.shiftStart) this.shiftStart = shared.shiftStart;
             bus.emit('valueLog:changed');
@@ -3090,7 +3417,7 @@ const SCRIPT_LOGS_ENABLED = false;
             if (keys.length > CONFIG.VALUE_ARCHIVE_MAX_SHIFTS) {
                 keys.slice(0, keys.length - CONFIG.VALUE_ARCHIVE_MAX_SHIFTS).forEach(k => delete arc[k]);
             }
-            try { localStorage.setItem(this.archiveKey(), JSON.stringify(arc)); } catch (e) {}
+            try { localStorage.setItem(this.archiveKey(), JSON.stringify(arc)); } catch (e) { /* magazyn pełny albo zablokowany — archiwum jest wygodą, nie danymi krytycznymi */ }
         },
 
         // ---------------- wpisy ----------------
@@ -3233,7 +3560,7 @@ const SCRIPT_LOGS_ENABLED = false;
             this._writeBackTimer = null;
             this.entries = [];
             this.shiftStart = store.sessionConfig.shiftCalculatedStartTime || null;
-            try { localStorage.removeItem(this.key()); } catch (e) {}
+            try { localStorage.removeItem(this.key()); } catch (e) { /* nie ma czego usuwać albo magazyn niedostępny — i tak czyścimy stan w pamięci */ }
             delete StorageManager._lastWritten[this.key()];
             Utils.log(`[DZIENNIK] wyczyszczony: ${reason}`);
             bus.emit('valueLog:changed');
@@ -3267,6 +3594,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/17-fx-rates.js ───
     // ==========================================
     // 6f. KURSY WALUT (9.0.0)
     // ==========================================
@@ -3445,7 +3773,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * Przy wyłączonym module cen sprowadza się do odczytu bez sieci.
          */
         async refresh() {
-            try { localStorage.removeItem(this.key()); } catch (e) {}
+            try { localStorage.removeItem(this.key()); } catch (e) { /* zapisanych kursów mogło nie być — odświeżenie i tak pobierze je od nowa */ }
             this.rates = null; this.source = null; this.fetchedAt = null;
             await this.init();
             bus.emit('valueLog:changed');     // sumy przeliczają się w locie
@@ -3453,6 +3781,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/18-routing.js ───
     // ==========================================
     // 6g. DOKĄD POJECHAŁ PRZEDMIOT (9.0.0)
     // ==========================================
@@ -3555,7 +3884,7 @@ const SCRIPT_LOGS_ENABLED = false;
                         + '(kod sortowania tak i się nie pojawił)');
             }
             this.state = { completed: false, entryId: null, code: null,
-                           direction: null, pending: false };
+                           direction: null, pending: false, counted: false };
             if (reason) Utils.log(`[KIERUNEK] nowy przedmiot (${reason})`);
         },
 
@@ -3638,8 +3967,11 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Przedmiot zaliczony przez licznik: od tego momentu wolno zastosować sumę.
-         * @param {string} entryId — id wpisu dziennika (nie indeks: dziennik jest
-         *   wspólny na wszystkie karty i po scaleniu kolejność się zmienia).
+         * @param {string|null} entryId — id wpisu dziennika (nie indeks: dziennik
+         *   jest wspólny na wszystkie karty i po scaleniu kolejność się zmienia).
+         *   Przy wyłączonym module cen wpisu nie ma i przychodzi tu `null` —
+         *   kierunek i tak trzeba zaliczyć, bo procent sprzedaży dziennika nie
+         *   potrzebuje.
          */
         onCompleted(entryId) {
             if (!this.state) this.startItem('zakończenie bez początku');
@@ -3649,10 +3981,45 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
+         * PROCENT SPRZEDAŻY — zliczenie przedmiotu, który pojechał na sprzedaż.
+         *
+         * Liczy się DOKŁADNIE RAZ na przedmiot i dokładnie wtedy, gdy znane są oba
+         * warunki: przedmiot zaliczony przez licznik i kierunek ustalony. Oba
+         * przychodzą niezależnie i w dowolnej kolejności, a `applyTo` woła się po
+         * każdym z nich — bez znacznika `counted` ten sam przedmiot policzyłby
+         * się dwa razy.
+         *
+         * Liczony jest WYŁĄCZNIE mianownik dodatni: mianownikiem procentu jest
+         * zwykły licznik przedmiotów, więc niesprzedaż i kierunek nieustalony nie
+         * wymagają własnego klucza — wchodzą do sumy przez sam licznik. Dzięki
+         * temu „trzy pierwsze przedmioty na niesprzedaż” daje 0%, a nie brak
+         * liczby, o co właśnie chodzi na początku zmiany.
+         *
+         * Ręczna poprawka licznika (skróty klawiszowe, przyciski) tu nie wchodzi
+         * — tak samo, jak nie wchodzi do dziennika wartości. Poprawia się zwykle
+         * to, czego program nie zobaczył, a kierunku takiego przedmiotu nikt nie
+         * zna.
+         */
+        countSold(st) {
+            if (!st || st.counted || !st.completed || !st.direction) return;
+            st.counted = true;
+            if (st.direction !== 'sell') return;
+            const cid = store.currentTabInstanceId;
+            const next = (store.tabSold[cid] || 0) + 1;
+            store.tabSold[cid] = next;
+            StorageManager.saveSold(cid, next);
+        },
+
+        /**
          * Zapisuje znak, gdy znane są OBA warunki: przedmiot zaliczony i kierunek
          * ustalony. Kolejność ich wystąpienia nie ma znaczenia.
+         *
+         * Procent sprzedaży liczy się PRZED sprawdzeniem wpisu dziennika i to
+         * jest sedno: przy wyłączonym module cen wpisu nie ma wcale, a procent
+         * ma działać i wtedy.
          */
         applyTo(st) {
+            this.countSold(st);
             if (!st || !st.completed || !st.entryId || !st.direction) return;
             ValueLog.setDirection(st.entryId, st.direction, st.code);
         },
@@ -3667,6 +4034,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/19-price-module.js ───
     // ==========================================
     // 6h. WŁĄCZNIK MODUŁU CEN (9.2.0)
     // ==========================================
@@ -3704,6 +4072,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/20-price-card.js ───
     // ==========================================
     // 6b. PRICE CARD (karta ceny po ASIN)
     // ==========================================
@@ -4221,10 +4590,22 @@ const SCRIPT_LOGS_ENABLED = false;
             // z cudzego panelu stanu. Oba warianty kłamały, więc przy
             // niejednoznaczności uczciwiej nie zgadywać, tylko zostawić na karcie
             // ostatnie, co było wiadome na pewno.
+            // Karta znika na czas odczytu, żeby nie podać nam WŁASNEGO ASIN —
+            // pokazuje przecież poprzedni przedmiot. Przywrócenie idzie przez
+            // `finally`: gdyby odczyt innerText rzucił (a robi to przy
+            // rozbieranym drzewie), karta zostałaby schowana na zawsze i wyglądało
+            // by to jak zepsuty skrypt, choć powodem byłby jeden wyjątek.
+            // Bez wartości początkowej: przypisanie w `try` jest jedyną drogą
+            // do użycia `text` niżej, więc `= ''` byłoby wartością, której nikt
+            // nigdy nie przeczyta (ESLint, no-useless-assignment).
             const prev = this.el && this.el.style.display;
-            if (this.el) this.el.style.display = 'none';
-            const text = document.body.innerText || '';
-            if (this.el) this.el.style.display = prev || '';
+            let text;
+            try {
+                if (this.el) this.el.style.display = 'none';
+                text = document.body.innerText || '';
+            } finally {
+                if (this.el) this.el.style.display = prev || '';
+            }
 
             const all = text.match(new RegExp(CONFIG.PRICE_ASIN_FROM_TEXT.source, 'g'));
             if (!all || !all.length) return null;
@@ -4479,46 +4860,86 @@ const SCRIPT_LOGS_ENABLED = false;
             if (pc.position.top) { this.el.style.top = pc.position.top; this.el.style.bottom = 'auto'; }
             else { this.el.style.top = 'auto'; this.el.style.bottom = '14px'; }
 
+            /**
+             * TŁO, RAMKA I CIEŃ IDĄ RAZEM (1.0.0).
+             *
+             * Przy przezroczystym tle — a takie jest teraz domyślne — ramka
+             * i cień zostawiłyby na ekranie pustą obwódkę wiszącą nad stroną:
+             * najgorsze z obu światów. Dlatego wszystkie trzy zależą od jednej
+             * wartości: jest tło, jest oprawa; nie ma tła, zostaje sam tekst,
+             * dokładnie jak w liniach okna statystyk.
+             */
+            const bgAlpha = Utils.clampNum(pc.bgAlpha, 0, 100, 0);
             const rgb = Utils.hexToRgb(pc.bgColorHex);
-            this.el.style.background = `rgba(${rgb}, ${Utils.clampNum(pc.bgAlpha, 0, 100, 88) / 100})`;
-            this.el.style.border = '1px solid rgba(130,170,255,.40)';
-            this.el.style.boxShadow = '0 6px 26px rgba(0,0,0,.55)';
+            this.el.style.background = bgAlpha > 0 ? `rgba(${rgb}, ${bgAlpha / 100})` : 'transparent';
+            this.el.style.border = bgAlpha > 0 ? '1px solid rgba(130,170,255,.40)' : 'none';
+            this.el.style.boxShadow = bgAlpha > 0 ? '0 6px 26px rgba(0,0,0,.55)' : 'none';
+            this.el.style.padding = bgAlpha > 0 ? '10px 14px' : '0';
+            // Krój z tej samej listy, co okno statystyk: karta ma czytać się jak
+            // reszta interfejsu, a nie jak osobny widżet.
+            this.el.style.fontFamily =
+                CONFIG.FONT_FAMILY_OPTIONS[pc.fontFamily] || CONFIG.FONT_FAMILY_OPTIONS.default;
 
             // WAŻNE: skrót `font:` wymaga podania rodziny, a `inherit` jest w nim
             // niedopuszczalny — przeglądarka po cichu wyrzuca CAŁĄ regułę.
             // Złapane na stanowisku: cena rysowała się 14px/400 zamiast 30px/800.
             // Dlatego właściwości ustawia się osobno.
-            const fs = Utils.clampNum(pc.fontSize, 10, 96, 30);
-            const px = (k) => Math.round(fs * k) + 'px';
+            const fs = Utils.clampNum(pc.fontSize, 10, 96, 16);
+            const px = (k) => Math.max(9, Math.round(fs * k)) + 'px';
+
+            /**
+             * Cień tekstu jest tu obowiązkowy właśnie DLATEGO, że tło bywa
+             * przezroczyste: jasny tekst na jasnym fragmencie cudzej strony
+             * przestaje być czytelny. Jest słaby — ma odciąć literę od tła,
+             * a nie rysować się sam.
+             */
+            const SHADOW = 'text-shadow:0 1px 3px rgba(0,0,0,.6)';
 
             // pointer-events:auto — ten jedyny wyjątek od przezroczystej karty.
             // Przy włączonym przeciąganiu jest zdejmowany: wtedy ciągnie się całą
             // kartę, a kliknięcie w link wyprowadziłoby ze strony w środku gestu.
             const dragging = store.uiFlags.isPriceCardDragging;
+            /**
+             * KLIKALNOŚĆ KODU PRODUKTU (1.0.0: domyślnie WYŁĄCZONA).
+             *
+             * `pointer-events:auto` na linku było jedynym wyjątkiem od
+             * przezroczystej karty, czyli jedynym miejscem, w którym karta mogła
+             * przykryć przycisk T-REX. Skoro jej zadaniem jest nie przeszkadzać,
+             * wyjątek włącza się ręcznie.
+             *
+             * Przy przeciąganiu link jest zdejmowany niezależnie od ustawienia:
+             * wtedy ciągnie się całą kartę, a kliknięcie wyprowadziłoby ze strony
+             * w środku gestu.
+             */
+            const linkOn = pc.asinClickable === true && !dragging;
             this.asinEl.style.cssText = [
-                'font-family:Consolas,Monaco,monospace', 'font-weight:600',
-                'font-size:' + px(0.46), 'line-height:1.3',
-                'color:rgba(190,215,255,.9)', 'letter-spacing:.6px', 'text-transform:uppercase',
-                'display:inline-block',
-                'pointer-events:' + (dragging ? 'none' : 'auto'),
-                'cursor:' + (dragging ? 'inherit' : 'pointer'),
-                'text-decoration:underline', 'text-decoration-style:dotted',
-                'text-underline-offset:2px',
+                'font-weight:400', 'font-size:' + px(0.8), 'line-height:1.3',
+                'color:rgba(190,215,255,.75)', 'letter-spacing:.5px', 'text-transform:uppercase',
+                'display:' + (pc.showAsin === false ? 'none' : 'inline-block'),
+                'pointer-events:' + (linkOn ? 'auto' : 'none'),
+                'cursor:' + (linkOn ? 'pointer' : 'inherit'),
+                'text-decoration:' + (linkOn ? 'underline' : 'none'),
+                'text-decoration-style:dotted', 'text-underline-offset:2px',
+                SHADOW,
             ].join(';');
 
+            // Cena: ta sama grubość, co w liniach okna statystyk. Tłuste 800
+            // przy przezroczystym tle wyglądało jak baner, a nie jak podpowiedź.
             this.priceEl.style.cssText = [
-                'font-weight:800', 'font-size:' + px(1), 'line-height:1.15',
-                'margin:4px 0 2px', 'text-shadow:0 2px 8px rgba(0,0,0,.75)', 'letter-spacing:.3px',
+                'font-weight:400', 'font-size:' + px(1), 'line-height:1.25',
+                'margin:' + (bgAlpha > 0 ? '4px 0 2px' : '1px 0 0'),
+                SHADOW, 'letter-spacing:.2px',
             ].join(';');
 
             this.rrpEl.style.cssText = [
-                'font-weight:600', 'font-size:' + px(0.52), 'line-height:1.35',
-                'color:rgba(255,214,130,.95)',
+                'font-weight:400', 'font-size:' + px(0.8), 'line-height:1.3',
+                'color:rgba(255,214,130,.8)', SHADOW,
             ].join(';');
 
             this.srcEl.style.cssText = [
-                'font-family:Consolas,Monaco,monospace', 'font-size:' + px(0.36),
-                'line-height:1.4', 'color:rgba(205,220,245,.6)', 'margin-top:4px',
+                'font-size:' + px(0.7), 'line-height:1.35',
+                'color:rgba(205,220,245,.5)', 'margin-top:' + (bgAlpha > 0 ? '4px' : '1px'),
+                SHADOW,
             ].join(';');
 
             // Dwa różne tryby wyświetlania wykresu.
@@ -4597,9 +5018,18 @@ const SCRIPT_LOGS_ENABLED = false;
             // wybranego nie wolno: człowiek otworzyłby amazon.de i nie zobaczył
             // tam pokazanej ceny.
             const found = this.cache.get(asin);
-            const url = productUrl(asin, found && found.market);
-            this.asinEl.setAttribute('href', url);
-            this.asinEl.title = url;
+            if (pc.asinClickable === true) {
+                const url = productUrl(asin, found && found.market);
+                this.asinEl.setAttribute('href', url);
+                this.asinEl.title = url;
+            } else {
+                // Przy wyłączonej klikalności kod produktu jest ZWYKŁYM TEKSTEM.
+                // Samo `pointer-events:none` by nie wystarczyło: element z href
+                // zostaje w kolejności tabulacji i otwiera się środkowym
+                // przyciskiem myszy. Bez href nie ma czego otworzyć.
+                this.asinEl.removeAttribute('href');
+                this.asinEl.title = '';
+            }
             // !csp.img jest obowiązkowy także tutaj: applyStyle() ramkę chowa,
             // a render() wywołuje się później i bez tego sprawdzenia przywracałby ją.
             if (pc.source === 'graph' && pc.showGraph && !this.csp.img && priceModuleOn()) {
@@ -4677,7 +5107,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (r.fallback && r.market) {
                     bits.push(I18n.get('priceCard_foundIn', { host: marketplace(r.market).host.replace(/^www\./, '') }));
                 }
-                bits.push(`${r.ms}ms`);
+                if (pc.showLatency) bits.push(`${r.ms}ms`);
                 if (r.stale) bits.push(I18n.get('priceCard_cached'));
                 this.srcEl.textContent = bits.join(' · ');
                 this.srcEl.style.color = r.fallback ? 'rgba(255,214,130,.85)' : 'rgba(205,220,245,.6)';
@@ -4749,8 +5179,9 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/21-input.js ───
     // ==========================================
-    // 7. INPUT & TRIGGERS
+    // 7. WEJŚCIE I WYZWALACZE
     // ==========================================
     const InputManager = {
         seqBuffer:[],
@@ -4888,8 +5319,9 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
+    // ─── src/22-bootstrap.js ───
     // ==========================================
-    // 8. BOOTSTRAP
+    // 8. ROZRUCH
     // ==========================================
     const Main = {
         identifyTab() {
@@ -4992,7 +5424,7 @@ const SCRIPT_LOGS_ENABLED = false;
             bus.clear();
             // Dostęp z konsoli należał do zdjętego egzemplarza: zostawić go znaczy
             // trzymać w pamięci cały stan i wszystkie menedżery.
-            try { delete window[CONFIG.SCRIPT_ID_PREFIX + 'API']; delete window.SH; } catch (e) {}
+            try { delete window[CONFIG.SCRIPT_ID_PREFIX + 'API']; delete window.SH; } catch (e) { /* własność mogła być niekasowalna — rozbiórki to nie zatrzymuje */ }
             // Egzemplarza na stronie już nie ma — więc i zamek na powtórne
             // uruchomienie się zdejmuje, inaczej poprawionego pliku nie dałoby się
             // już wkleić.
@@ -5074,7 +5506,14 @@ const SCRIPT_LOGS_ENABLED = false;
                     const entryId = ValueLog.add(asin, price, store.currentTabInstanceId);
                     // Znak stawia Routing: albo od razu (kod już znany), albo
                     // później, gdy kod pojawi się na ekranie.
-                    if (entryId) Routing.onCompleted(entryId);
+                    //
+                    // Wołamy ZAWSZE, także gdy wpisu dziennika nie ma (entryId
+                    // null przy wyłączonym module cen). Do 1.0.0 stał tu warunek
+                    // `if (entryId)` i był poprawny, dopóki jedynym odbiorcą
+                    // kierunku był dziennik. Od czasu procentu sprzedaży kierunek
+                    // ma drugiego odbiorcę, który sieci nie potrzebuje — a przy
+                    // ustawieniach domyślnych to jest JEDYNY odbiorca.
+                    Routing.onCompleted(entryId);
                 });
 
                 /**
@@ -5099,7 +5538,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 // ValueLog.scheduleArchive), więc ostatnia paczka przedmiotów
                 // inaczej by do niego nie zdążyła. Sam dziennik pozycji jest
                 // w tym momencie już w localStorage — on pisze się od razu.
-                this.onPageHide = () => { try { ValueLog.flushArchive(); } catch (e) {} };
+                this.onPageHide = () => { try { ValueLog.flushArchive(); } catch (e) { /* strona już się zamyka — nie ma komu zgłosić błędu */ } };
                 window.addEventListener('pagehide', this.onPageHide);
 
                 // Autozapis ustawień. Do 8.1.0 stan zapisywał się dopiero przy
@@ -5257,9 +5696,9 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
-
+    // ─── src/23-presets.js ───
 // ==========================================
-    // 9. EMPLOYEE PRESETS (KONFIGURACJA OSOBISTA)
+    // 9. USTAWIENIA PRACOWNIKA (KONFIGURACJA OSOBISTA)
     // ==========================================
 
 
@@ -5474,9 +5913,11 @@ const SCRIPT_LOGS_ENABLED = false;
    -----------------------------------------------------------------------------
    STAŁE W CONFIG (zmiana wymaga edycji pliku)
    -----------------------------------------------------------------------------
-   SCRIPT_VERSION = '9.2.0'
-   SCRIPT_ID_PREFIX = 'statsHelper_v9_2_0_'
-       Prefiks wszystkich kluczy w localStorage. Zmiana = start od zera
+   SCRIPT_VERSION             podstawiany przy budowaniu z package.json
+   SCRIPT_ID_PREFIX = 'statsHelper_v1_0_0_'
+       Prefiks wszystkich kluczy w localStorage. Koduje SCHEMAT danych, a nie
+       numer wydania: 1.1.0 i 1.2.0 zostaną przy 'v1_0_0', dopóki układ
+       zapisywanych pól się nie zmieni. Zmiana prefiksu = start od zera
        (stare ustawienia i liczniki przestają być widoczne).
    DEBUG_MODE = false         bierze się z SCRIPT_LOGS_ENABLED z góry pliku;
                               tu jest wartość startowa, SH.logsOn() zmienia ją w locie
