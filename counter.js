@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StatsHelper (Reactive Architecture Edition)
 // @namespace    bomba.stats.helper
-// @version      1.0.0
+// @version      1.3.2
 // @description  Stan reaktywny + EventBus + zmienne CSS. Licznik przetworzonych przedmiotów dla TREX.
 // @match        https://trex-prod-eu.aka.amazon.com/*
 // @run-at       document-end
@@ -9,14 +9,25 @@
 // ==/UserScript==
 
 // =====================================================================
-//  HASŁO DOSTĘPU DO PANELU USTAWIEŃ
+//  HASŁA DOSTĘPU DO PANELU USTAWIEŃ
 //  ---------------------------------------------------------------
-//  Wpisz te litery gdziekolwiek na stronie (poza polem tekstowym),
-//  a panel ustawień się otworzy. Zmiana hasła = zmiana tej jednej
-//  linii; długość jest dowolna, wielkość liter nie ma znaczenia
-//  (bufor klawiatury jest podnoszony do wielkich liter).
+//  Wpisz którekolwiek z nich gdziekolwiek na stronie (poza polem
+//  tekstowym), a panel ustawień się otworzy. Wszystkie działają tak
+//  samo — to jedna lista, a nie hasło główne i zapasowe.
+//
+//  Dodawanie i usuwanie: dopisać albo skreślić pozycję w tej tablicy.
+//  Długość dowolna, wielkość liter bez znaczenia (bufor klawiatury
+//  jest podnoszony do wielkich liter), białe znaki z brzegów są
+//  obcinane, powtórzenia pomijane.
+//
+//  JEDNO OGRANICZENIE, O KTÓRYM TRZEBA WIEDZIEĆ. Hasło nie może być
+//  początkiem innego hasła. Gdyby na liście stanęły 'BOM' i 'BOMBA',
+//  to po wpisaniu trzeciej litery zadziałałoby 'BOM' i wyczyściło
+//  bufor — 'BOMBA' nie dałoby się wpisać nigdy. Pilnuje tego test
+//  (tests/18-passwords.test.js), więc przy takiej liście bramka
+//  w CI zapali się na czerwono, zamiast zostawić martwe hasło.
 // =====================================================================
-const SETTINGS_ACCESS_PASSWORD = 'JAREKHUESOS';
+const SETTINGS_ACCESS_PASSWORDS = ['GORDONPAULE', 'BOMBA', 'JAREKHUESOS'];
 
 // =====================================================================
 //  LOGI W KONSOLI — GŁÓWNY WYŁĄCZNIK
@@ -107,8 +118,46 @@ const SCRIPT_LOGS_ENABLED = false;
     // ==========================================
     // 1. STAŁE PODSTAWOWE I KONFIGURACJA
     // ==========================================
+    /**
+     * Sprowadza listę haseł z góry pliku do postaci, na której da się pracować
+     * bez niespodzianek. Człowiek edytuje tam zwykłą tablicę i ma prawo wpisać
+     * do niej cokolwiek — a od tego, co stąd wyjdzie, zależy jedyne wejście do
+     * panelu ustawień.
+     *
+     * Co robimy i dlaczego:
+     *   - pojedynczy łańcuch zamiast tablicy jest przyjmowany (typowa pomyłka
+     *     przy edycji, a skutkiem byłby rozpad na pojedyncze litery);
+     *   - białe znaki z brzegów obcinamy, bo w klawiaturę i tak nie wejdą tak,
+     *     jak wyglądają w pliku;
+     *   - wielkość liter znika, bo bufor klawiatury jest podnoszony do wielkich;
+     *   - puste pozycje wylatują. W dzisiejszym InputManagerze same by nie
+     *     zadziałały (mapa po ostatnim znaku nie ma dla nich klucza), ale to
+     *     przypadek układu wyszukiwania, a nie decyzja. Napisane wprost tutaj
+     *     przeżyje uproszczenie tamtej mapy do zwykłej pętli po `endsWith`,
+     *     po którym `''` pasowałoby do KAŻDEGO bufora i otwierało panel na
+     *     pierwszym klawiszu;
+     *   - powtórzenia znikają, żeby nie porównywać dwa razy tego samego;
+     *   - kolejność: od najdłuższego. Gdy w jednym naciśnięciu pasuje kilka
+     *     haseł (jedno jest końcówką drugiego), wygrywa dłuższe — deterministycznie,
+     *     a nie zależnie od kolejności wpisanej w pliku.
+     *
+     * Funkcja stoi tutaj, a nie w Utils, bo moduł 01 jest pierwszy w sklejeniu
+     * i w chwili budowania CONFIG Utils jeszcze nie istnieje.
+     */
+    function normalizeAccessPasswords(raw) {
+        const lista = Array.isArray(raw) ? raw : [raw];
+        const out = [];
+        for (const poz of lista) {
+            if (typeof poz !== 'string' && typeof poz !== 'number') continue;
+            const h = String(poz).trim().toUpperCase();
+            if (!h) continue;
+            if (out.indexOf(h) === -1) out.push(h);
+        }
+        return out.sort((a, b) => b.length - a.length);
+    }
+
     const CONFIG = {
-        SCRIPT_VERSION: '1.0.0',
+        SCRIPT_VERSION: '1.3.2',
         SCRIPT_NAME: 'Helper (Reactive)',
         /**
          * Prefiks koduje SCHEMAT MAGAZYNU, a nie numer buildu: wydania
@@ -130,7 +179,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * nowe wartości domyślne i moduł cen wstałby WŁĄCZONY u każdego, kto
          * już używał poprzedniej wersji — czyli dokładnie odwrotnie do zamiaru.
          */
-        SCRIPT_ID_PREFIX: 'statsHelper_v1_0_0_',
+        SCRIPT_ID_PREFIX: 'statsHelper_v1_3_0_',
         // Prefiksy poprzednich wersji: ich klucze są usuwane z localStorage przy
         // pierwszym uruchomieniu, żeby na maszynach ze stałą sesją nie zbierały
         // się śmieci.
@@ -154,13 +203,67 @@ const SCRIPT_LOGS_ENABLED = false;
         SETTINGS_PANEL_TEXT_COLOR: '#141414',
         SETTINGS_PANEL_ACCENT_COLOR: '#141414',
         SETTINGS_PANEL_INITIAL_WIDTH_PX: 450,
-        // Hasło z góry pliku rozbite na znaki — porównanie idzie znak po znaku
-        // z buforem klawiatury (patrz InputManager).
-        SETTINGS_PANEL_ACCESS_SEQUENCE: String(SETTINGS_ACCESS_PASSWORD).toUpperCase().split(''),
+        /**
+         * Adres, spod którego ludzie uruchamiają skrypt zakładką w przeglądarce.
+         * Stąd bierze go ConfigCode.link(), składając gotową zakładkę z kodem
+         * ustawień — żeby adres stał w JEDNYM miejscu, a nie w dokumentacji
+         * i w kodzie osobno.
+         *
+         * =============================================================
+         * DLACZEGO `raw.`, A NIE ADRES WYDANIA NA github.com
+         * =============================================================
+         * Bo zakładka pobiera plik przez `fetch` z CUDZEJ strony, czyli
+         * zapytaniem międzydomenowym — a takie przechodzi tylko wtedy, gdy
+         * serwer odpowie nagłówkiem `Access-Control-Allow-Origin`.
+         *
+         *   github.com/…/releases/latest/download/counter.js
+         *       -> 302 BEZ tego nagłówka, przeglądarka zrywa zapytanie:
+         *          „has been blocked by CORS policy”. Adres działa przy
+         *          KLIKNIĘCIU (zwykłe pobranie pliku), ale nie przez fetch —
+         *          i na tym się przejechaliśmy w 1.2.0.
+         *   raw.githubusercontent.com/…
+         *       -> 200 z `access-control-allow-origin: *`.
+         *
+         * Gałąź `release` to wskaźnik „ostatnie wydanie”: przesuwa ją workflow
+         * wydania po opublikowaniu tagu, więc uruchamia się wyłącznie kod,
+         * który ktoś świadomie wydał — a nie bieżący stan `main`.
+         *
+         * Przypięcie do konkretnej wersji: ta sama ścieżka z tagiem zamiast
+         * `release` (…/counter/v1.2.0/counter.js).
+         */
+        RELEASE_URL: 'https://raw.githubusercontent.com/YafremauAliaksei/counter/release/counter.js',
+        /**
+         * Hasła z góry pliku, sprowadzone do jednej postaci (patrz
+         * normalizeAccessPasswords). Porównanie z buforem klawiatury robi
+         * InputManager.
+         *
+         * Pusta lista jest dozwolonym stanem i znaczy „panelu nie otwiera żadne
+         * hasło” — wtedy zostaje konsola (SH.SettingsPanel.toggle()).
+         */
+        SETTINGS_PANEL_ACCESS_PASSWORDS: normalizeAccessPasswords(SETTINGS_ACCESS_PASSWORDS),
+        /**
+         * DZIAŁY.
+         *
+         * Dopisanie kolejnego to JEDNA linia tutaj plus nazwa w trzech
+         * słownikach: panel, linia 2 i menedżer zadań chodzą po tej mapie,
+         * a nie po wpisanej gdzieś liście trzech kluczy. Kolejność w mapie jest
+         * kolejnością na ekranie.
+         *
+         * `urlKeyword` to sposób, w jaki karta rozpoznaje SAMA SIEBIE po adresie
+         * T-REX. Dział bez tego pola nie zostanie nigdy rozpoznany jako karta —
+         * i o to chodzi przy OTHER.
+         *
+         * OTHER (1.3.2) — dział RĘCZNY, „pozostałe”. Nie ma swojej karty, więc
+         * licznik nie zwiększy go nigdy sam: liczby wpisuje się w panelu.
+         * Po co: paczki bywają robione poza trzema znanymi procesami, a do tej
+         * pory nie było ich gdzie zapisać — wpisywano je do cudzego działu albo
+         * przepadały, przez co tempo zmiany kłamało w dół.
+         */
         KNOWN_TAB_TYPES: {
             CRET: { key: 'CRET', displayNameKey: 'tabName_CRET', baseColorHex: '#0078D7', urlKeyword: 'CRETURN' },
             REFURB: { key: 'REFURB', displayNameKey: 'tabName_REFURB', baseColorHex: '#FFA500', urlKeyword: 'CRETURN_REFURB' },
             WHD: { key: 'WHD', displayNameKey: 'tabName_WHD', baseColorHex: '#1EB41E', urlKeyword: 'WAREHOUSE_DEALS' },
+            OTHER: { key: 'OTHER', displayNameKey: 'tabName_OTHER', baseColorHex: '#9E9E9E' },
         },
         UNKNOWN_TAB_TYPE_KEY: 'UNKNOWN',
         DEFAULT_UNKNOWN_TAB_DETAILS: { key: 'UNKNOWN', displayNameKey: 'tabName_UNKNOWN', baseColorHex: '#808080' },
@@ -202,6 +305,53 @@ const SCRIPT_LOGS_ENABLED = false;
          * ustala się z samego tekstu strony (patrz Routing) i sieci nie wymaga.
          */
         STORAGE_PREFIX_TAB_SOLD: 'sold_',
+        /**
+         * Licznik przedmiotów, które WYPADAJĄ Z MIANOWNIKA procentu sprzedaży —
+         * osobny klucz na kartę, dokładnie jak dwa liczniki obok.
+         *
+         * Trzyma się go osobno, a nie odejmuje na oko przy rysowaniu, bo linie
+         * 2 i 7 sumują po wszystkich kartach naraz: bez własnego klucza karta
+         * sąsiednia nie miałaby skąd wziąć swojej liczby audytów.
+         */
+        STORAGE_PREFIX_TAB_NEUTRAL: 'neutral_',
+        /**
+         * ZADANIA (1.3.0).
+         *
+         * Lista zadań i identyfikator aktywnego leżą pod JEDNYM kluczem
+         * wspólnym dla wszystkich kart: zadanie jest własnością człowieka, a nie
+         * karty — kto przechodzi do innego procesu, przechodzi w nim z każdą
+         * otwartą kartą naraz.
+         *
+         * Liczniki są odwrotnie: klucz na parę zadanie+karta, dokładnie jak
+         * liczniki zmiany i z tego samego powodu — dwie karty piszące jeden
+         * klucz zamazywałyby sobie liczby nawzajem.
+         */
+        STORAGE_KEY_TASKS: 'tasks',
+        STORAGE_PREFIX_TASK_COUNTER: 'taskcnt_',
+        /** Nazwa pierwszego zadania: cała zmiana jest jednym procesem, dopóki człowiek nie powie inaczej. */
+        DEFAULT_TASK_NAME: 'Default',
+        /**
+         * Poniżej tylu milisekund pracy tempo NIE ISTNIEJE i pokazuje się zero.
+         *
+         * Dziesięć sekund to granica, poniżej której dzielenie daje liczby
+         * w rodzaju „3600 paczek na godzinę” — pierwsza paczka tuż po starcie
+         * zadania. Ta sama granica obowiązuje przy przeliczaniu tempa wpisanego
+         * ręcznie na paczki, bo tam pomyłka jest jeszcze droższa: wpisana liczba
+         * trafia do liczników na stałe.
+         */
+        RATE_MIN_WORKED_MS: 10000,
+        /** Granica nazwy — panel ma wąską kolumnę, a nazwa stoi też w linii 8. */
+        TASK_MAX_NAME_LEN: 24,
+        /**
+         * Skróty do ustawiania początku zadania, w minutach wstecz.
+         *
+         * Wartości wzięte z tego, jak to wygląda na hali: o nowym procesie
+         * człowiek dowiaduje się z wyprzedzeniem, zbiera narzędzia i dopiero
+         * potem siada do skryptu — od faktycznego startu mijają wtedy dwie,
+         * pięć, czasem kilkanaście minut. Stąd krótkie odstępy na początku
+         * listy, a nie równe ćwiartki godziny.
+         */
+        TASK_QUICK_OFFSETS_MIN: [0, 2, 5, 15, 30],
         SESSION_STORAGE_TAB_INSTANCE_ID_KEY: 'tabInstanceId',
         STORAGE_KEY_VALUE_LOG: 'valueLog',
 
@@ -318,16 +468,63 @@ const SCRIPT_LOGS_ENABLED = false;
          * Dlatego kierunek śledzi osobny mały automat (moduł Routing), a nie
          * odczyt „w momencie zakończenia”.
          */
-        ROUTE_SELL_CODES: ['CRITS-PRG2', 'CRITS-MXP6', 'CRITS-POZ1', 'CRITS-LEJ5'],
-        ROUTE_UNSELL_CODES: ['Liquidation', 'FBA-DE-Unsellable', 'Remove', 'WHD',
-                             'Stow-Unsellable', 'Refurb'],
         /**
-         * Kod, który sam z siebie niczego nie rozstrzyga: przedmiot może
+         * TRZY LISTY KODÓW I JEDNA ZASADA WSPÓLNA DLA WSZYSTKICH (1.3.0).
+         *
+         * Dopasowanie NIE jest dokładne: wzorzec zaczepia się o słowo
+         * `Zeskanuj` i o początek kodu, a ogona nie domyka. Dzięki temu jedna
+         * pozycja na liście obsługuje całą rodzinę: `External` łapie też
+         * `External-Repair`, `AUDIT` łapie `Audit-cokolwiek`. Wielkość liter
+         * nie ma znaczenia (wzorzec ma flagę `i`, a Routing.canon sprowadza
+         * trafienie do zapisu z listy).
+         *
+         * PRZEDROSTEK `NS-` znaczy „nie-sort” i opisuje GABARYT, a nie kierunek:
+         * `NS-Stow-Unsellable` jedzie tam samo, co `Stow-Unsellable`. Dlatego
+         * każda rodzina niesprzedażowa ma na liście oba warianty. Wyjątkiem są
+         * kody sprzedażowe magazynów (`CRITS-*`) — tam odpowiednikiem dla
+         * nie-sortu jest jeden wspólny `NS-PL-Sellable`, a nie `NS-CRITS-*`.
+         */
+        ROUTE_SELL_CODES: ['CRITS-PRG2', 'CRITS-MXP6', 'CRITS-POZ1', 'CRITS-LEJ5',
+                           'PL-Sellable', 'NS-PL-Sellable'],
+        ROUTE_UNSELL_CODES: ['Liquidation', 'NS-Liquidation',
+                             'FBA-DE-Unsellable', 'NS-FBA-DE-Unsellable',
+                             'Remove', 'NS-Remove',
+                             'WHD', 'NS-WHD',
+                             'Stow-Unsellable', 'NS-Stow-Unsellable',
+                             'Refurb', 'NS-Refurb',
+                             'External', 'NS-External'],
+        /**
+         * KODY, KTÓRYCH NIE DA SIĘ ROZSTRZYGNĄĆ — NIGDY (1.3.0).
+         *
+         * Audyt to nie kierunek, tylko oddanie przedmiotu w cudze ręce:
+         * o tym, czy pojedzie na sprzedaż, zadecyduje audytor w ciągu swojej
+         * zmiany, czyli godziny po tym, jak przedmiot zniknął z ekranu. Czekanie
+         * na tę odpowiedź nie ma sensu, bo nie przyjdzie.
+         *
+         * Skutek dla procentu sprzedaży: taki przedmiot WYPADA Z MIANOWNIKA.
+         * Zrobionych paczek bywa więc więcej niż paczek, z których liczy się
+         * procent — i to jest poprawne, a nie błąd rachunku. Różnica między
+         * audytem a „kodu nie było wcale” jest celowa: brak kodu zostaje
+         * w mianowniku (patrz komentarz przy Routing.countDirection).
+         *
+         * `NS-AUDIT` na dzień dodania listy nie był widziany w pracy ani razu.
+         * Stoi tu, bo przedrostek `NS-` może wyjść przy każdym kodzie, a linia
+         * na liście kosztuje mniej niż zgadywanie po roku, czemu procent
+         * odskoczył.
+         */
+        ROUTE_NEUTRAL_CODES: ['AUDIT', 'NS-AUDIT'],
+        /**
+         * Kody, które same z siebie niczego nie rozstrzygają: przedmiot może
          * pojechać i na sprzedaż, i do utylizacji. Kierunek staje się znany
          * z następnej linii — ROUTE_CONFIRM_SELL albo ROUTE_CONFIRM_UNSELL.
          * Do tego czasu przedmiot wisi nieokreślony.
          */
-        ROUTE_AMBIGUOUS_CODE: 'Secondary-Sorting',
+        ROUTE_AMBIGUOUS_CODES: ['Secondary-Sorting', 'NS-Secondary-Sorting'],
+        // Linie uściślające zostają BEZ przedrostka `NS-` i to nie jest
+        // przeoczenie: `Transfer - Sellable` i `FBATransfer` to STATUS
+        // przedmiotu, a status jest ten sam dla sortu i dla nie-sortu.
+        // Przedrostek opisuje gabaryt, więc pojawia się przy kodzie kierunku
+        // (NS-Secondary-Sorting), a nie przy potwierdzeniu.
         ROUTE_CONFIRM_SELL: /Przedmiot\s+wys[łl]ano\s+do\s+Transfer\s*[-–—]\s*Sellable/gi,
         // Ogon nazwy bywa różny („FBATransfer-...”), więc czepiamy się początku
         // słowa, a nie dokładnego dopasowania.
@@ -518,12 +715,31 @@ const SCRIPT_LOGS_ENABLED = false;
      *             bez ceny, więc linia pokazywałaby same zera i „?N”.
      *   linia 7 — WŁĄCZONA. Jedyna widoczna domyślnie.
      */
+    /**
+     * Wartości domyślne ustawień WSPÓLNYCH dla wszystkich kart.
+     *
+     * Wydzielone z baseState (1.2.0), bo kod konfiguracji musi mieć z czym
+     * porównywać: do ciągu wchodzi tylko to, co różni się od domyślnego.
+     * Bez osobnego obiektu „domyślne” trzeba by je odgadywać z pustego stanu.
+     */
+    const DEFAULT_USER_CONFIG = {
+        language: CONFIG.DEFAULT_LANGUAGE,
+        // Sklep Amazon: link z ASIN, rynek wykresu Keepa i waluta dziennika.
+        marketplace: CONFIG.DEFAULT_MARKETPLACE,
+        globalStatsContributionKnown: Object.keys(CONFIG.KNOWN_TAB_TYPES)
+            .reduce((acc, key) => ({ ...acc, [key]: true }), {}),
+        keyboardShortcuts: { INCREMENT: 'None', DECREMENT: 'None' },
+        triggerMutationDebounceMs: CONFIG.DEFAULT_TRIGGER_MUTATION_DEBOUNCE_MS,
+        settingsPanelWidth: CONFIG.SETTINGS_PANEL_INITIAL_WIDTH_PX,
+        customTabSettings: {},
+    };
+
     const DEFAULT_LINE_CONFIG = {
         line1_currentTab: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line2_globalSummary: {
             visible: false, colorHex: '#808080', alpha: 60, fontSize: 14,
             multicolor: true,
-            customColors: { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E' }
+            customColors: { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
         },
         line3_shiftInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line4_lunchInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
@@ -546,7 +762,18 @@ const SCRIPT_LOGS_ENABLED = false;
          * Bez oznaczeń, bez jednostek, bez nazw działów. Odświeżanie raz na
          * sekundę, tak jak reszta okna.
          */
-        line7_compact: { visible: true, colorHex: '#808080', alpha: 50, fontSize: 13 }
+        line7_compact: { visible: true, colorHex: '#808080', alpha: 50, fontSize: 13 },
+        /**
+         * LINIA 8 — BIEŻĄCE ZADANIE (1.3.0).
+         *
+         * Nazwa procesu i JEGO własne liczby: paczki, tempo, procent sprzedaży,
+         * przepracowany czas. Linie 1, 2 i 7 pokazują całą zmianę i tak zostaje
+         * — tu stoi to, co dzieje się teraz, w procesie, przy którym człowiek
+         * siedzi w tej chwili.
+         *
+         * Domyślnie wyłączona, jak każda nowa linia (zasada 3 z CLAUDE.md).
+         */
+        line8_taskInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 13 }
     };
 
     const DEFAULT_LOCAL_CONFIG = {
@@ -606,17 +833,40 @@ const SCRIPT_LOGS_ENABLED = false;
             // Szukać ceny w innych sklepach, jeśli w wybranym jej nie ma (8.6.0).
             marketFallback: true,
             showPrice: true,
-            showRrp: true,
+            /**
+             * Cena katalogowa (RRP) albo druga seria wykresu — DRUGI wiersz ceny.
+             *
+             * 1.1.0: domyślnie wyłączona. Karta ma po włączeniu modułu pokazywać
+             * jedną linijkę z ceną i nic więcej; kto potrzebuje odniesienia,
+             * włącza to w panelu.
+             *
+             * Wyłącznik dotyczy WYŁĄCZNIE cen. Komunikat o tym, dlaczego ceny nie
+             * ma (blokada CSP, wyczerpany limit), idzie tym samym wierszem
+             * i wyłączyć się go nie da — cicha awaria wygląda jak zepsuty skrypt.
+             */
+            showRrp: false,
             showGraph: true,
+            /**
+             * Wiersz źródła: „keepa-ocr · 96ms”. Domyślnie wyłączony — to
+             * informacja dla kogoś, kto dobiera źródło ceny, a nie dla kogoś,
+             * kto pracuje.
+             *
+             * Jeden wyjątek zostaje widoczny zawsze: adnotacja, że cenę zdjęto
+             * z INNEGO sklepu niż wybrany. Bez niej suma zmiany niepostrzeżenie
+             * zmieszałaby waluty i witryny, a przy dwóch rynkach w euro nie
+             * widać tego nawet po samej kwocie.
+             */
+            showSource: false,
             /**
              * CO POKAZAĆ W SAMEJ KARCIE — te same klocki, co przy liniach okna
              * statystyk: wyłącznik na każdy element osobno.
              *
-             * showAsin       — wiersz z kodem produktu;
+             * showAsin       — wiersz z kodem produktu (od 1.1.0 domyślnie
+             *                  wyłączony: to identyfikator, a nie cena);
              * asinClickable  — czy ten kod jest linkiem do sklepu;
              * showLatency    — ile milisekund zajęło zdobycie ceny.
              */
-            showAsin: true,
+            showAsin: false,
             /**
              * DOMYŚLNIE WYŁĄCZONY, I TO JEST ŚWIADOMA ZMIANA WYGLĄDU (patrz
              * CHANGELOG).
@@ -652,14 +902,30 @@ const SCRIPT_LOGS_ENABLED = false;
             // z cenami.
             width: 280,
             /**
-             * ROZMIAR CENY (1.0.0: 30 -> 16).
+             * ROZMIAR CENY (1.0.0: 30 -> 16, 1.1.0: 16 -> 13).
              *
              * Trzydzieści pikseli tłustą czcionką na nieprzezroczystym tle robiło
              * z karty najbardziej krzykliwy element ekranu — a jest to element
-             * pomocniczy. Szesnaście to rozmiar bliski liniom okna statystyk
-             * (14 px), więc karta czyta się jak one, a nie jak baner.
+             * pomocniczy. Trzynaście to dokładnie tyle, ile ma linia 7, bo karta
+             * ma teraz wyglądać jak ona: jedna szara linijka, nic więcej.
              */
-            fontSize: 16,
+            fontSize: 13,
+            /**
+             * KOLOR I PRZEZROCZYSTOŚĆ WSZYSTKICH TEKSTÓW KARTY.
+             *
+             * Jedna para wartości na całą kartę — cenę, kod produktu, drugi wiersz
+             * i wiersz źródła. Domyślnie to samo, co w linii 7: szary, alfa 50%.
+             *
+             * Do 1.1.0 kolory były wpisane na sztywno i NIOSŁY STAN: zielona cena
+             * znaczyła „jest”, pomarańczowa kreska „tnie CSP”. Zostało to zdjęte
+             * świadomie i jest to wymiana, a nie strata: stan mówi teraz TEKST,
+             * który przy awarii pokazuje się zawsze, niezależnie od wyłączników.
+             * Zdanie czyta się jednoznacznie i nie wymaga od nikogo pamiętania,
+             * co znaczy pomarańczowy — a kolor stał się tym, czym jest w liniach
+             * okna statystyk: ustawieniem wyglądu.
+             */
+            colorHex: '#808080',
+            alpha: 50,
             // Tryb wyświetlania wykresu Keepa:
             //   'legend' — tylko blok z cenami (domyślnie)
             //   'right'  — prawa część wykresu w naturalnej wielkości
@@ -688,7 +954,28 @@ const SCRIPT_LOGS_ENABLED = false;
             scriptLoaded: '${scriptName} v${version} Loaded.', yes: 'Yes', no: 'No', notApplicable: 'NA',
             error_items_per_hour_unavailable: '~0.0/h (short work time)', fromUnit: 'from', inUnit: 'in',
             hoursShort: 'h', minutesShort: 'm', secondsShort: 's', statsPerHourUnit: '/h', completedUnit: 'done',
-            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_UNKNOWN: 'UNKNOWN',
+            taskPausedMark: '(paused)',
+            section_tasks: 'Tasks',
+            tasks_hint: 'A task is one work process with its own clock. Switching tasks keeps the shift counters intact — only the rate is counted separately, so a late start no longer spoils it.',
+            tasks_name: 'Name',
+            tasks_startedAt: 'Started',
+            tasks_now: 'now',
+            tasks_minutesBack: '-${value} min',
+            tasks_shiftStart: 'shift start',
+            tasks_packages: 'Packages',
+            tasks_rate: 'Rate',
+            tasks_summary: 'Sales / time',
+            tasks_pause: 'Pause the clock',
+            tasks_unpause: 'Resume the clock',
+            tasks_new: 'New task',
+            tasks_newPlaceholder: 'name of the new task',
+            tasks_history: 'Tasks of this shift',
+            tasks_resume: 'Resume',
+            tasks_delete: 'Delete',
+            tasks_deleteConfirm: 'Delete the task "${name}"? Its packages will be taken off the shift counter.',
+            tasks_ongoing: 'now',
+            lineSettings_taskInfoHint: 'Name of the current task and its own numbers: packages, rate, sales percentage, time worked. The lines above describe the whole shift; this one describes the process you are on right now.',
+            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_OTHER: 'Other', tabName_UNKNOWN: 'UNKNOWN',
             statsLine1_current: '${tabName} ${itemsPerHour}${statsPerHourUnit} (${count} ${completedUnit} ${inUnit} ${workTimeFormatted})',
             statsLine2_global_separator: ' ',
             statsLine2_global_tab_format: '${tabName} ${itemsPerHour}${statsPerHourUnit}(${count})',
@@ -773,6 +1060,17 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_showLatency: 'Show price lookup time (ms)',
             priceCard_width: 'Card width: ${value}px', priceCard_fontSize: 'Price size: ${value}px',
             priceCard_bg: 'Card background', priceCard_drag: 'Make Card Draggable',
+            priceCard_showSource: 'Show price source',
+            configCode_section: 'Settings code',
+            configCode_hint: 'The code holds everything you changed away from the defaults: lines, colours, transparency, sizes, position, switches. Paste it on another machine and you get the same interface.',
+            configCode_yours: 'Your code',
+            configCode_link: 'Ready-made bookmarklet',
+            configCode_select: 'Select for copying',
+            configCode_paste: 'Paste a code here',
+            configCode_apply: 'Apply code',
+            configCode_applied: 'Settings applied: ${n}',
+            priceCard_textColor: 'Text colour',
+            priceCard_textColorHint: 'One colour for every line of the card. Failure messages are always shown, whatever the switches say.',
             priceCard_dragActive: 'Card is Draggable (Click to Pin)', priceCard_resetPosition: 'Reset Card Position',
             priceCard_searching: 'looking up price...', priceCard_noPrice: 'price not available',
             priceCard_noAsin: 'no ASIN on page', priceCard_item: 'item', priceCard_rrp: 'RRP',
@@ -783,7 +1081,28 @@ const SCRIPT_LOGS_ENABLED = false;
             scriptLoaded: '${scriptName} v${version} Załadowany.', yes: 'Tak', no: 'Nie', notApplicable: 'BD',
             error_items_per_hour_unavailable: '~0.0/h (za krótki czas)', fromUnit: 'od', inUnit: 'w',
             hoursShort: 'g', minutesShort: 'm', secondsShort: 's', statsPerHourUnit: '/h', completedUnit: 'zrobione',
-            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_UNKNOWN: 'NIEZNANA',
+            taskPausedMark: '(pauza)',
+            section_tasks: 'Zadania',
+            tasks_hint: 'Zadanie to jeden proces pracy z własnym zegarem. Przełączenie nie rusza liczników zmiany — osobno liczy się tylko tempo, więc spóźniony start przestaje je psuć.',
+            tasks_name: 'Nazwa',
+            tasks_startedAt: 'Początek',
+            tasks_now: 'teraz',
+            tasks_minutesBack: '-${value} min',
+            tasks_shiftStart: 'początek zmiany',
+            tasks_packages: 'Paczki',
+            tasks_rate: 'Tempo',
+            tasks_summary: 'Sprzedaż / czas',
+            tasks_pause: 'Zatrzymaj zegar',
+            tasks_unpause: 'Uruchom zegar',
+            tasks_new: 'Nowe zadanie',
+            tasks_newPlaceholder: 'nazwa nowego zadania',
+            tasks_history: 'Zadania tej zmiany',
+            tasks_resume: 'Wznów',
+            tasks_delete: 'Usuń',
+            tasks_deleteConfirm: 'Usunąć zadanie „${name}”? Jego paczki zejdą z licznika zmiany.',
+            tasks_ongoing: 'teraz',
+            lineSettings_taskInfoHint: 'Nazwa bieżącego zadania i jego własne liczby: paczki, tempo, procent sprzedaży, przepracowany czas. Linie wyżej opisują całą zmianę, ta — proces, przy którym siedzisz teraz.',
+            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_OTHER: 'Inne', tabName_UNKNOWN: 'NIEZNANA',
             statsLine1_current: '${tabName} ${itemsPerHour}${statsPerHourUnit} (${count} ${completedUnit} ${inUnit} ${workTimeFormatted})',
             statsLine2_global_separator: ' ', statsLine2_global_tab_format: '${tabName} ${itemsPerHour}${statsPerHourUnit}(${count})', statsLine2_global_total_format: '= ~${totalItemsPerHour}${statsPerHourUnit} (${totalCount})',
             statsLine3_shift: '${shiftType} zmiana (${shiftStartTime})', statsLine4_lunch: 'Przerwa #${lunchNumber} (${lunchStartTime} - ${lunchEndTime})', statsLine5_clock: '[ ${currentTime} ]',
@@ -863,6 +1182,17 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_showLatency: 'Pokaż czas zdobycia ceny (ms)',
             priceCard_width: 'Szerokość karty: ${value}px', priceCard_fontSize: 'Rozmiar ceny: ${value}px',
             priceCard_bg: 'Tło karty', priceCard_drag: 'Uaktywnij przeciąganie karty',
+            priceCard_showSource: 'Pokaż źródło ceny',
+            configCode_section: 'Kod ustawień',
+            configCode_hint: 'W kodzie siedzi wszystko, co zmieniłeś względem wartości domyślnych: linie, kolory, przezroczystość, rozmiary, położenie, wyłączniki. Wklejony na innej maszynie daje ten sam interfejs.',
+            configCode_yours: 'Twój kod',
+            configCode_link: 'Gotowa zakładka',
+            configCode_select: 'Zaznacz do skopiowania',
+            configCode_paste: 'Wklej tu kod',
+            configCode_apply: 'Nałóż kod',
+            configCode_applied: 'Nałożono ustawień: ${n}',
+            priceCard_textColor: 'Kolor tekstu',
+            priceCard_textColorHint: 'Jeden kolor na wszystkie wiersze karty. Komunikat o tym, dlaczego ceny nie ma, pokazuje się zawsze, niezależnie od wyłączników.',
             priceCard_dragActive: 'Karta przeciągalna (kliknij by przypiąć)', priceCard_resetPosition: 'Zresetuj pozycję karty',
             priceCard_searching: 'szukam ceny...', priceCard_noPrice: 'brak ceny',
             priceCard_noAsin: 'nie znaleziono ASIN', priceCard_item: 'przedmiot', priceCard_rrp: 'katalogowa',
@@ -873,7 +1203,28 @@ const SCRIPT_LOGS_ENABLED = false;
             scriptLoaded: '${scriptName} v${version} Загружен.', yes: 'Да', no: 'Нет', notApplicable: 'Н/Д',
             error_items_per_hour_unavailable: '~0.0/ч (мало времени)', fromUnit: 'от', inUnit: 'за',
             hoursShort: 'ч', minutesShort: 'м', secondsShort: 'с', statsPerHourUnit: '/ч', completedUnit: 'готово',
-            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_UNKNOWN: 'НЕИЗВЕСТНО',
+            taskPausedMark: '(пауза)',
+            section_tasks: 'Задачи',
+            tasks_hint: 'Задача — это один процесс работы со своими часами. Переключение не трогает счётчики смены: отдельно считается только темп, поэтому опоздание к началу процесса его больше не портит.',
+            tasks_name: 'Название',
+            tasks_startedAt: 'Начало',
+            tasks_now: 'сейчас',
+            tasks_minutesBack: '-${value} мин',
+            tasks_shiftStart: 'начало смены',
+            tasks_packages: 'Пачки',
+            tasks_rate: 'Темп',
+            tasks_summary: 'Продажа / время',
+            tasks_pause: 'Остановить часы',
+            tasks_unpause: 'Запустить часы',
+            tasks_new: 'Новая задача',
+            tasks_newPlaceholder: 'название новой задачи',
+            tasks_history: 'Задачи этой смены',
+            tasks_resume: 'Продолжить',
+            tasks_delete: 'Удалить',
+            tasks_deleteConfirm: 'Удалить задачу «${name}»? Её пачки уйдут со счётчика смены.',
+            tasks_ongoing: 'сейчас',
+            lineSettings_taskInfoHint: 'Название текущей задачи и её собственные числа: пачки, темп, процент продажи, отработанное время. Строки выше описывают всю смену, эта — процесс, которым вы заняты сейчас.',
+            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_OTHER: 'Прочее', tabName_UNKNOWN: 'НЕИЗВЕСТНО',
             statsLine1_current: '${tabName} ${itemsPerHour}${statsPerHourUnit} (${count} ${completedUnit} ${inUnit} ${workTimeFormatted})',
             statsLine2_global_separator: ' ', statsLine2_global_tab_format: '${tabName} ${itemsPerHour}${statsPerHourUnit}(${count})', statsLine2_global_total_format: '= ~${totalItemsPerHour}${statsPerHourUnit} (${totalCount})',
             statsLine3_shift: '${shiftType} смена (${shiftStartTime})', statsLine4_lunch: 'Перерыв #${lunchNumber} (${lunchStartTime} - ${lunchEndTime})', statsLine5_clock: '[ ${currentTime} ]',
@@ -953,6 +1304,17 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_showLatency: 'Показывать время получения цены (мс)',
             priceCard_width: 'Ширина карточки: ${value}px', priceCard_fontSize: 'Размер цены: ${value}px',
             priceCard_bg: 'Фон карточки', priceCard_drag: 'Включить перетаскивание карточки',
+            priceCard_showSource: 'Показывать источник цены',
+            configCode_section: 'Код настроек',
+            configCode_hint: 'В коде лежит всё, что вы изменили относительно значений по умолчанию: строки, цвета, прозрачность, размеры, положение, выключатели. Вставленный на другой машине даёт тот же интерфейс.',
+            configCode_yours: 'Ваш код',
+            configCode_link: 'Готовая закладка',
+            configCode_select: 'Выделить для копирования',
+            configCode_paste: 'Вставьте сюда код',
+            configCode_apply: 'Применить код',
+            configCode_applied: 'Применено настроек: ${n}',
+            priceCard_textColor: 'Цвет текста',
+            priceCard_textColorHint: 'Один цвет на все строки карточки. Сообщение о том, почему цены нет, показывается всегда, независимо от выключателей.',
             priceCard_dragActive: 'Карточка перемещается (клик чтобы зафиксировать)', priceCard_resetPosition: 'Сбросить позицию карточки',
             priceCard_searching: 'ищу цену...', priceCard_noPrice: 'цены нет',
             priceCard_noAsin: 'ASIN не найден', priceCard_item: 'предмет', priceCard_rrp: 'RRP',
@@ -1075,6 +1437,18 @@ const SCRIPT_LOGS_ENABLED = false;
             if (h > 0) return `${h}${hS} ${String(m).padStart(2, '0')}${mS}`;
             else if (m > 0) return `${m}${mS} ${String(s).padStart(2, '0')}${sS}`;
             return `${s}${sS}`;
+        },
+        /**
+         * Godzina i minuta ze znacznika czasu — `18:32`.
+         *
+         * Do podsumowań zadań, gdzie liczy się sama pora, a nie data: zadanie
+         * mieści się w jednej zmianie, więc dzień jest oczywisty, a doklejanie
+         * go zjadałoby szerokość wąskiej kolumny panelu.
+         */
+        formatClock(ms) {
+            const d = new Date(Number(ms));
+            if (isNaN(d.getTime())) return '—';
+            return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
         },
         /**
          * Liczba z konfiguracji sprowadzona do bezpiecznego zakresu (9.2.0).
@@ -1249,19 +1623,22 @@ const SCRIPT_LOGS_ENABLED = false;
         // Ile z policzonych przedmiotów pojechało na sprzedaż — na każdą kartę
         // osobno, tak samo jak tabCounters. Mianownikiem procentu jest tabCounters.
         tabSold: {},
-        userConfig: {
-            language: CONFIG.DEFAULT_LANGUAGE,
-            // Sklep Amazon: link z ASIN, rynek wykresu Keepa i waluta dziennika.
-            marketplace: CONFIG.DEFAULT_MARKETPLACE,
-            globalStatsContributionKnown: Object.keys(CONFIG.KNOWN_TAB_TYPES).reduce((acc, key) => ({ ...acc, [key]: true }), {}),
-            keyboardShortcuts: { INCREMENT: 'None', DECREMENT: 'None' },
-            triggerMutationDebounceMs: CONFIG.DEFAULT_TRIGGER_MUTATION_DEBOUNCE_MS,
-            settingsPanelWidth: CONFIG.SETTINGS_PANEL_INITIAL_WIDTH_PX,
-            customTabSettings: {},
-            // 8.3.0: usunięte pole defaultLocalTabConfig — nikt go nigdy nie
-            // czytał, a w całości dublowało się w localStorage przy każdym
-            // zapisie.
-        },
+        // Przedmioty wyjęte z mianownika procentu (audyt, ręczne wpisy) — patrz
+        // Routing i TaskManager.
+        tabNeutral: {},
+        /**
+         * ZADANIA (1.3.0). Lista jest zwykłą tablicą, więc NIE jest reaktywna
+         * po elementach — TaskManager podmienia ją w całości przy każdej
+         * zmianie i tylko dzięki temu linia 8 oraz panel dowiadują się o niej.
+         */
+        tasks: [],
+        activeTaskId: null,
+        taskCounters: {},
+        // 8.3.0: usunięte pole defaultLocalTabConfig — nikt go nigdy nie czytał,
+        // a w całości dublowało się w localStorage przy każdym zapisie.
+        // 1.2.0: wartości przeniesione do DEFAULT_USER_CONFIG, bo kod konfiguracji
+        // musi mieć z czym porównywać bieżący stan.
+        userConfig: Utils.deepMerge({}, DEFAULT_USER_CONFIG),
         localTabConfig: Utils.deepMerge({}, DEFAULT_LOCAL_CONFIG),
         sessionConfig: {
             // 8.3.0: usunięte sessionLastActivityTimestamp — zadeklarowane
@@ -1402,6 +1779,46 @@ const SCRIPT_LOGS_ENABLED = false;
         saveSold(tabKey, count) {
             this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD + tabKey), String(count));
         },
+        /** Licznik przedmiotów wyjętych z mianownika procentu (audyt, ręczne wpisy). */
+        saveNeutral(tabKey, count) {
+            this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL + tabKey), String(count));
+        },
+        /**
+         * Lista zadań i identyfikator aktywnego — jeden klucz wspólny dla
+         * wszystkich kart. Zapis jest mały (kilka zadań na zmianę), więc idzie
+         * w całości, bez różnicowania.
+         */
+        saveTasks() {
+            this.write(this.getKey(CONFIG.STORAGE_KEY_TASKS),
+                       JSON.stringify({ activeId: store.activeTaskId, list: store.tasks }));
+        },
+        /** Liczniki jednego zadania na jednej karcie: „paczki,sprzedane,poza mianownikiem”. */
+        saveTaskCounter(taskId, tabKey, c) {
+            this.write(this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER + taskId + '_' + tabKey),
+                       `${c.done},${c.sold},${c.neutral}`);
+        },
+        removeTaskCounter(taskId, tabKey) {
+            const key = this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER + taskId + '_' + tabKey);
+            delete this._lastWritten[key];
+            localStorage.removeItem(key);
+        },
+        /**
+         * Rozbiór klucza licznika zadania. Identyfikator zadania sam zawiera
+         * podkreślenia (`task_abc_def`), więc dzieli się od PRAWEJ: ostatni
+         * człon to karta, wszystko przed nim to identyfikator.
+         */
+        parseTaskCounterKey(localKey) {
+            const rest = localKey.substring(CONFIG.STORAGE_PREFIX_TASK_COUNTER.length);
+            const cut = rest.lastIndexOf('_');
+            if (cut <= 0) return null;
+            return { taskId: rest.substring(0, cut), tabKey: rest.substring(cut + 1) };
+        },
+        /** Wartość licznika zadania z magazynu; śmieć czyta się jako zera. */
+        parseTaskCounterValue(raw) {
+            const parts = String(raw == null ? '' : raw).split(',');
+            const num = (i) => Math.max(0, parseInt(parts[i], 10) || 0);
+            return { done: num(0), sold: num(1), neutral: num(2) };
+        },
         removeCounter(tabKey) {
             const key = this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER + tabKey);
             delete this._lastWritten[key];
@@ -1464,6 +1881,10 @@ const SCRIPT_LOGS_ENABLED = false;
 
                 const prefix = this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER);
                 const soldPrefix = this.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD);
+                const neutralPrefix = this.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL);
+                const taskPrefix = this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER);
+                this.loadTasks();
+                const taskCounters = {};
                 for (let i = 0; i < localStorage.length; i++) {
                     const key = localStorage.key(i);
                     if (key && key.startsWith(prefix)) {
@@ -1472,11 +1893,44 @@ const SCRIPT_LOGS_ENABLED = false;
                     } else if (key && key.startsWith(soldPrefix)) {
                         const tabKey = key.substring(soldPrefix.length);
                         store.tabSold[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                    } else if (key && key.startsWith(neutralPrefix)) {
+                        const tabKey = key.substring(neutralPrefix.length);
+                        store.tabNeutral[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                    } else if (key && key.startsWith(taskPrefix)) {
+                        const parsed = this.parseTaskCounterKey(key.substring(CONFIG.SCRIPT_ID_PREFIX.length));
+                        if (!parsed) continue;
+                        if (!taskCounters[parsed.taskId]) taskCounters[parsed.taskId] = {};
+                        taskCounters[parsed.taskId][parsed.tabKey] =
+                            this.parseTaskCounterValue(localStorage.getItem(key));
                     }
                 }
+                store.taskCounters = taskCounters;
             } catch (e) { Utils.error("Storage load failed", e); }
 
             if (fromRemote) this.suppressSaveUntil = Date.now() + CONFIG.REMOTE_APPLY_SUPPRESS_MS;
+        },
+        /**
+         * Wczytanie listy zadań. Śmieciowy zapis (cudza wersja, ręczna edycja
+         * magazynu) nie może zatrzymać startu — wtedy lista zostaje pusta,
+         * a TaskManager.init() postawi zadanie domyślne.
+         */
+        loadTasks() {
+            let parsed;
+            try { parsed = JSON.parse(localStorage.getItem(this.getKey(CONFIG.STORAGE_KEY_TASKS)) || 'null'); }
+            catch (e) { parsed = null; }
+            const list = (parsed && Array.isArray(parsed.list) ? parsed.list : [])
+                .filter(t => t && typeof t.id === 'string' && Array.isArray(t.segments) && t.segments.length)
+                .map(t => ({
+                    id: t.id,
+                    name: String(t.name || CONFIG.DEFAULT_TASK_NAME).slice(0, CONFIG.TASK_MAX_NAME_LEN),
+                    segments: t.segments
+                        .filter(seg => seg && typeof seg.from === 'number')
+                        .map(seg => ({ from: seg.from, to: typeof seg.to === 'number' ? seg.to : null })),
+                }))
+                .filter(t => t.segments.length);
+            store.tasks = list;
+            const activeId = parsed && typeof parsed.activeId === 'string' ? parsed.activeId : null;
+            store.activeTaskId = list.some(t => t.id === activeId) ? activeId : (list.length ? list[list.length - 1].id : null);
         },
         listen() {
             // 8.3.0: referencja do obsługi jest zapamiętana — potrzebna w Main.teardown().
@@ -1506,6 +1960,25 @@ const SCRIPT_LOGS_ENABLED = false;
                     const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_SOLD.length);
                     const val = parseInt(e.newValue, 10) || 0;
                     if (store.tabSold[tabKey] !== val) store.tabSold[tabKey] = val;
+                } else if (localKey === CONFIG.STORAGE_KEY_TASKS) {
+                    // Zadanie jest własnością człowieka, a nie karty: przejście
+                    // do innego procesu w jednej karcie obowiązuje we wszystkich.
+                    this.loadTasks();
+                } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TASK_COUNTER)) {
+                    // Liczniki zadania z sąsiedniej karty — potrzebne panelowi,
+                    // który pokazuje podsumowanie zadania po WSZYSTKICH kartach.
+                    const parsed = this.parseTaskCounterKey(localKey);
+                    if (parsed) {
+                        const byTab = { ...(store.taskCounters[parsed.taskId] || {}) };
+                        byTab[parsed.tabKey] = this.parseTaskCounterValue(e.newValue);
+                        store.taskCounters = { ...store.taskCounters, [parsed.taskId]: byTab };
+                    }
+                } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL)) {
+                    // Audyty sąsiedniej karty — z tego samego powodu: bez nich
+                    // linie 2 i 7 policzyłyby procent z za dużego mianownika.
+                    const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL.length);
+                    const val = parseInt(e.newValue, 10) || 0;
+                    if (store.tabNeutral[tabKey] !== val) store.tabNeutral[tabKey] = val;
                 } else if (!store.uiFlags.isSettingsPanelVisible) {
                     this.debouncedLoad();
                 }
@@ -1553,6 +2026,11 @@ const SCRIPT_LOGS_ENABLED = false;
             const prefixes = [
                 StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER),
                 StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD),
+                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL),
+                // Zadania opisują JEDNĄ zmianę, tak samo jak liczniki: zostawione
+                // przez granicę zmiany dałyby tempo liczone od wczoraj.
+                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER),
+                StorageManager.getKey(CONFIG.STORAGE_KEY_TASKS),
             ];
             Object.keys(localStorage)
                 .filter(k => prefixes.some(p => k.startsWith(p)))
@@ -1563,6 +2041,13 @@ const SCRIPT_LOGS_ENABLED = false;
 
             Object.keys(store.tabCounters).forEach(k => { store.tabCounters[k] = 0; });
             Object.keys(store.tabSold).forEach(k => { store.tabSold[k] = 0; });
+            Object.keys(store.tabNeutral).forEach(k => { store.tabNeutral[k] = 0; });
+            // Lista zadań wstaje od zera: TaskManager.init() postawi zadanie
+            // domyślne, zaczynające się razem z nową zmianą.
+            store.tasks = [];
+            store.activeTaskId = null;
+            store.taskCounters = {};
+            TaskManager.init();
 
             // 8.4.0: dziennik wartości żyje dokładnie tyle samo, co liczniki —
             // to ta sama ewidencja, tylko w pieniądzach. Podsumowania odchodzącej
@@ -1699,27 +2184,34 @@ const SCRIPT_LOGS_ENABLED = false;
 
             StorageManager.saveState();
         },
+        /**
+         * Ile z odcinka [from, to] zjadła przerwa obiadowa.
+         *
+         * Wydzielone z getWorkTime() w 1.3.0, bo ten sam rachunek jest potrzebny
+         * zadaniom: kto nie pamiętał o pauzie na obiad, miałby w zadaniu pół
+         * godziny pracy, której nie było. Jedno miejsce prawdy — obie strony
+         * odejmują dokładnie to samo.
+         */
+        lunchOverlapMs(from, to) {
+            const idx = store.sessionConfig.selectedLunchIndex;
+            const opt = idx !== null && CONFIG.LUNCH_OPTIONS_BASE[idx];
+            if (!opt || !(to > from)) return 0;
+
+            const shiftDate = new Date(store.sessionConfig.shiftCalculatedStartTime || from);
+            const lStartObj = Utils.timeStringToDate(opt.start, shiftDate, opt.type==='night' && parseInt(opt.start.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
+            const lEndObj = Utils.timeStringToDate(opt.end, shiftDate, opt.type==='night' && parseInt(opt.end.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
+            if (lEndObj < lStartObj) lEndObj.setDate(lEndObj.getDate() + 1);
+
+            const aStart = Math.max(from, lStartObj.getTime());
+            const aEnd = Math.min(to, lEndObj.getTime());
+            return aEnd > aStart ? aEnd - aStart : 0;
+        },
         getWorkTime() {
             if (!store.sessionConfig.shiftCalculatedStartTime) return { workedMs: 0, lunchMs: 0 };
             const now = Date.now();
             const start = store.sessionConfig.shiftCalculatedStartTime;
             const elapsed = Math.max(0, now - start);
-            let lunchMs = 0;
-
-            const idx = store.sessionConfig.selectedLunchIndex;
-            if (idx !== null && CONFIG.LUNCH_OPTIONS_BASE[idx]) {
-                const opt = CONFIG.LUNCH_OPTIONS_BASE[idx];
-                const shiftDate = new Date(start);
-
-                const lStartObj = Utils.timeStringToDate(opt.start, shiftDate, opt.type==='night' && parseInt(opt.start.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
-                const lEndObj = Utils.timeStringToDate(opt.end, shiftDate, opt.type==='night' && parseInt(opt.end.substring(0,2)) < 12 && shiftDate.getHours() >= 12);
-
-                if (lEndObj < lStartObj) lEndObj.setDate(lEndObj.getDate() + 1);
-
-                const aStart = Math.max(start, lStartObj.getTime());
-                const aEnd = Math.min(now, lEndObj.getTime());
-                if (aEnd > aStart) lunchMs = aEnd - aStart;
-            }
+            const lunchMs = this.lunchOverlapMs(start, now);
             return { workedMs: Math.max(0, elapsed - lunchMs), lunchMs };
         }
     };
@@ -1859,7 +2351,7 @@ const SCRIPT_LOGS_ENABLED = false;
     // tworzy elementy, a CSSManager i panel ustawień chodzą po linesConfig.
     const LINE_KEYS = ['line1_currentTab', 'line2_globalSummary', 'line3_shiftInfo',
                        'line4_lunchInfo', 'line5_realTimeClock', 'line6_valueSum',
-                       'line7_compact'];
+                       'line7_compact', 'line8_taskInfo'];
 
     // ─── src/10-ui-window.js ───
     const StatsWindowRenderer = {
@@ -1898,7 +2390,8 @@ const SCRIPT_LOGS_ENABLED = false;
             // przyjść w następnym. Bez tej ścieżki procent czekałby na takt
             // timera, czyli do sekundy — widać by to było jako liczbę, która
             // „nie nadąża” za ekranem.
-            onStorePaths(['tabCounters', 'tabSold', 'sessionConfig', 'userConfig', 'localTabConfig'],
+            onStorePaths(['tabCounters', 'tabSold', 'tabNeutral', 'tasks', 'activeTaskId',
+                          'taskCounters', 'sessionConfig', 'userConfig', 'localTabConfig'],
                          () => this.renderContent());
             onStorePaths(['localTabConfig.statsWindowPosition'], () => this.applyPosition());
             bus.on('valueLog:changed', () => this.renderContent());
@@ -2021,28 +2514,38 @@ const SCRIPT_LOGS_ENABLED = false;
             // 8.1.0: wcześniej przy zbyt krótkim czasie podstawiało się tu całe
             // zdanie, zawierające już „/h”, i w linii wychodziło „~0.0/h (...)/h”.
             // Teraz funkcja zwraca zawsze samą liczbę.
-            const getIph = (c) => hWorked > 0.0027 ? (c / hWorked).toFixed(1) : '0.0';
+            // Granica „tempo jeszcze nie istnieje” stoi w jednym miejscu dla
+            // zmiany i dla zadania — inaczej linia 1 i linia 8 mówiłyby co
+            // innego o tej samej pierwszej minucie pracy.
+            const getIph = (c) => workedMs >= CONFIG.RATE_MIN_WORKED_MS ? (c / hWorked).toFixed(1) : '0.0';
 
             /**
              * PROCENT SPRZEDAŻY (koniec każdej z linii 1, 2 i 7).
              *
              * Liczba od 0 do 100 ze znakiem procentu, zawsze na samym końcu linii.
-             * Mianownikiem jest licznik przedmiotów, a nie suma sprzedanych
-             * i niesprzedanych — dzięki temu przedmiot o nieustalonym kierunku
-             * obniża procent zamiast znikać z rachunku, a trzy niesprzedaże na
-             * początku zmiany dają uczciwe 0%, a nie puste miejsce.
+             * Mianownikiem jest licznik przedmiotów MINUS przedmioty
+             * nierozstrzygalne (audyt) — a nie suma sprzedanych i niesprzedanych.
+             * Dzięki temu przedmiot, przy którym kod się nie pojawił, obniża
+             * procent zamiast znikać z rachunku (trzy niesprzedaże na początku
+             * zmiany dają uczciwe 0%, a nie puste miejsce), a przedmiot oddany
+             * do audytu z rachunku wypada, bo jego kierunek rozstrzygnie się
+             * godziny później i nie na tym ekranie.
+             *
+             * Stąd druga liczba w nawiasie w linii 1 i liczba sztuk w linii 7
+             * mogą być WIĘKSZE niż mianownik procentu. To jest poprawne.
              *
              * Tekstu nie ma w słownikach celowo: to liczba i znak, identyczne we
              * wszystkich trzech językach.
              */
             const cSold = store.tabSold[cid] || 0;
+            const cRated = cCount - (store.tabNeutral[cid] || 0);
 
             // Linia 1: bieżąca zakładka
             this.lines.line1_currentTab.textContent = I18n.get('statsLine1_current', {
                 tabName: I18n.getTabName(cid), itemsPerHour: getIph(cCount), statsPerHourUnit: I18n.get('statsPerHourUnit'),
                 count: cCount, completedUnit: I18n.get('completedUnit'), inUnit: I18n.get('inUnit'),
                 workTimeFormatted: Utils.formatDuration(workedMs)
-            }) + ` ${Utils.percentFloor(cSold, cCount)}%`;
+            }) + ` ${Utils.percentFloor(cSold, cRated)}%`;
 
             /**
              * Linia 2: podsumowanie globalne.
@@ -2060,6 +2563,10 @@ const SCRIPT_LOGS_ENABLED = false;
             this.lines.line2_globalSummary.innerHTML = '';
             let gTotal = 0;
             let gSold = 0;
+            // Mianownik procentu zbiera się w tej samej pętli, co suma sztuk:
+            // liczby muszą pochodzić z jednego przebiegu, inaczej rozjadą się
+            // przy karcie, która akurat doszła albo odpadła.
+            let gRated = 0;
             const allKeys =[...Object.keys(CONFIG.KNOWN_TAB_TYPES), ...Object.keys(store.userConfig.customTabSettings)];
             const fragments =[];
             const line2Cfg = store.localTabConfig.linesConfig.line2_globalSummary;
@@ -2073,6 +2580,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (included && active) {
                     gTotal += count;
                     gSold += store.tabSold[k] || 0;
+                    gRated += count - (store.tabNeutral[k] || 0);
                     if (!showLine2) return;
                     const text = I18n.get('statsLine2_global_tab_format', {
                         tabName: I18n.getTabName(k).substring(0, 10),
@@ -2104,7 +2612,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.lines.line2_globalSummary.appendChild(document.createTextNode(
                     I18n.get('statsLine2_global_total_format', {
                         totalItemsPerHour: getIph(gTotal), statsPerHourUnit: I18n.get('statsPerHourUnit'), totalCount: gTotal
-                    }) + ` ${Utils.percentFloor(gSold, gTotal)}%`
+                    }) + ` ${Utils.percentFloor(gSold, gRated)}%`
                 ));
             }
 
@@ -2192,7 +2700,32 @@ const SCRIPT_LOGS_ENABLED = false;
              * --sh-line7_compact-*.
              */
             this.lines.line7_compact.textContent =
-                `${getIph(gTotal)} ${gTotal} ${Utils.percentFloor(gSold, gTotal)}%`;
+                `${getIph(gTotal)} ${gTotal} ${Utils.percentFloor(gSold, gRated)}%`;
+
+            /**
+             * LINIA 8 — BIEŻĄCE ZADANIE (1.3.0).
+             *
+             * Nazwa procesu i JEGO własne liczby. Linie wyżej opisują całą
+             * zmianę i po to są; tutaj stoi proces, przy którym człowiek siedzi
+             * w tej chwili — z własnym zegarem, więc opóźniony start nie psuje
+             * tempa. Format jest ten sam, co w podsumowaniu zadania w panelu:
+             *
+             *     fast_process 12 34.3/h 58% 0:21
+             *
+             * Pauza (zamknięty odcinek) dokleja na końcu znak, bo inaczej
+             * stojące tempo wygląda jak zepsuty licznik.
+             */
+            const task = TaskManager.active();
+            if (!task) {
+                this.lines.line8_taskInfo.textContent = '';
+            } else {
+                const t = TaskManager.totals(task);
+                const rate = TaskManager.rate(task);
+                const paused = TaskManager.isRunning(task) ? '' : ' ' + I18n.get('taskPausedMark');
+                this.lines.line8_taskInfo.textContent =
+                    `${task.name} ${t.done} ${rate.toFixed(1)}${I18n.get('statsPerHourUnit')} `
+                    + `${TaskManager.percent(task)}% ${Utils.formatDuration(TaskManager.workedMs(task))}${paused}`;
+            }
         }
     };
 
@@ -2268,6 +2801,27 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
             });
             document.body.appendChild(this.el);
+
+            /**
+             * PRZYCISK MA POKAZYWAĆ STAN, A NIE PAMIĘTAĆ WŁASNE KLIKNIĘCIE.
+             *
+             * Wygląd obu przycisków przeciągania wyliczany jest przy rysowaniu
+             * panelu z flag `uiFlags.*Dragging`. Przerysowanie wołała dotąd
+             * WYŁĄCZNIE obsługa kliknięcia — a flagę zdejmuje też ktoś inny:
+             * dragger po puszczeniu myszy (jedno przeciągnięcie = jedno
+             * ustawienie okna) i przycisk resetu pozycji.
+             *
+             * Skutek widoczny dla człowieka: przeciągnął okno, puścił — tryb już
+             * się wyłączył, ale przycisk dalej świeci pomarańczowym i twierdzi
+             * „kliknij, by przypiąć”. Kliknięcie w niego WŁĄCZA przeciąganie
+             * z powrotem, choć wygląda na wyłączające. Klasyczny rozjazd
+             * kontrolki ze stanem.
+             *
+             * Subskrypcja stoi w init(), a nie w render(): render() woła się przy
+             * każdej zmianie ustawienia, więc subskrypcje by się mnożyły.
+             */
+            bus.on('store:changed:uiFlags.isStatsWindowDragging', () => this.rerender());
+            bus.on('store:changed:uiFlags.isPriceCardDragging', () => this.rerender());
         },
         /**
          * Odroczone przerysowanie (8.3.0).
@@ -2298,6 +2852,205 @@ const SCRIPT_LOGS_ENABLED = false;
                 setTimeout(() => this.el.style.display = 'none', 200);
             }
         },
+        /**
+         * SEKCJA ZADAŃ — jedyna część panelu otwierana W TRAKCIE pracy.
+         *
+         * Stąd wzięła się kolejność: zadania i liczniki na samej górze, reszta
+         * (wygląd, kolory, skróty) niżej, bo to ustawia się raz na zmianę.
+         *
+         * Trzy rzeczy, które trzeba zrobić szybko, stoją obok siebie:
+         * przełączyć proces, poprawić jego początek i wpisać liczby po awarii
+         * maszyny. Każda mieści się w dwóch–trzech kliknięciach, bez list
+         * wyboru godziny i minuty.
+         */
+        buildTasksSection() {
+            const sec = UIBuilder.section(I18n.get('section_tasks'));
+            const task = TaskManager.active();
+            const cid = store.currentTabInstanceId;
+            sec.appendChild(UIBuilder.hint(I18n.get('tasks_hint')));
+
+            if (task) {
+                // --- nazwa bieżącego zadania ---
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_name'), h('input', {
+                    type: 'text', value: task.name, maxLength: CONFIG.TASK_MAX_NAME_LEN,
+                    onChange: (e) => { TaskManager.rename(task.id, e.target.value); this.rerender(); },
+                    style: { flexGrow: '1', padding: '4px' },
+                })));
+
+                // --- początek bieżącego odcinka ---
+                // Skróty w minutach wstecz zamiast list godzin i minut: o nowym
+                // procesie człowiek dowiaduje się z wyprzedzeniem, zbiera
+                // narzędzia i siada do skryptu kilka minut po faktycznym starcie.
+                // Kontrolki opisują początek CAŁEGO zadania, a nie ostatniego
+                // odcinka: człowiek ma w głowie jedno zdanie „to zadanie zaczęło
+                // się o X”. Pierwsza wersja ruszała ostatni odcinek, przez co
+                // przy zatrzymanym zegarze każde kliknięcie dokładało czas
+                // zamiast go przestawiać (patrz TaskManager.setStart).
+                const startedAt = TaskManager.span(task).from;
+                const quick = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } });
+                CONFIG.TASK_QUICK_OFFSETS_MIN.forEach(min => {
+                    quick.appendChild(UIBuilder.button(
+                        min === 0 ? I18n.get('tasks_now') : I18n.get('tasks_minutesBack', { value: min }),
+                        () => { TaskManager.setStart(task.id, Date.now() - min * 60000); this.rerender(); },
+                        { padding: '4px 8px', marginTop: '0' }));
+                });
+                if (store.sessionConfig.shiftCalculatedStartTime) {
+                    quick.appendChild(UIBuilder.button(I18n.get('tasks_shiftStart'), () => {
+                        TaskManager.setStart(task.id, store.sessionConfig.shiftCalculatedStartTime);
+                        this.rerender();
+                    }, { padding: '4px 8px', marginTop: '0' }));
+                }
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_startedAt'), quick));
+                sec.appendChild(UIBuilder.row('', h('input', {
+                    type: 'text', value: Utils.formatClock(startedAt), placeholder: 'HH:MM',
+                    onChange: (e) => {
+                        const ms = TaskManager.parseClock(e.target.value);
+                        if (ms !== null) TaskManager.setStart(task.id, ms);
+                        this.rerender();
+                    },
+                    style: { width: '70px', padding: '4px', textAlign: 'center' },
+                })));
+
+                // --- paczki i tempo: dwa pola opisujące TO SAMO ---
+                // Poprawiane jest zawsze to pole, w które człowiek wpisał
+                // liczbę; drugie przelicza się samo. Po wpisaniu tempa pokazuje
+                // się wartość OSIĄGALNA przy całych paczkach, a nie wpisana:
+                // przy 1:17 pracy „118” to 151 paczek, czyli 117,7 na godzinę.
+                const totals = TaskManager.totals(task);
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_packages'), UIBuilder.numberInput(totals.done, v => {
+                    TaskManager.applyTaskTotal(task, cid, v);
+                    this.syncTabCounters(cid);
+                    this.rerender();
+                })));
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_rate'), h('input', {
+                    type: 'number', min: 0, step: '0.1', value: TaskManager.rate(task).toFixed(1),
+                    onChange: (e) => {
+                        const applied = TaskManager.setRate(task, parseFloat(e.target.value), cid);
+                        if (applied !== null) this.syncTabCounters(cid);
+                        this.rerender();
+                    },
+                    style: { width: '80px', padding: '4px', textAlign: 'right' },
+                })));
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_summary'), h('span', {
+                    textContent: `${TaskManager.percent(task)}% · ${Utils.formatDuration(TaskManager.workedMs(task))}`,
+                })));
+
+                // --- przyciski ---
+                const running = TaskManager.isRunning(task);
+                sec.appendChild(UIBuilder.button(
+                    running ? I18n.get('tasks_pause') : I18n.get('tasks_unpause'),
+                    () => {
+                        if (running) TaskManager.pause();
+                        else TaskManager.resume(task.id, Date.now());
+                        this.rerender();
+                    },
+                    { width: '100%', marginTop: '8px', ...(running ? {} : { background: '#e0a800', color: '#141414' }) }));
+            }
+
+            // --- nowe zadanie ---
+            const nameInput = h('input', {
+                type: 'text', placeholder: I18n.get('tasks_newPlaceholder'), maxLength: CONFIG.TASK_MAX_NAME_LEN,
+                style: { flexGrow: '1', padding: '4px' },
+            });
+            const newRow = h('div', { style: { display: 'flex', gap: '6px', marginTop: '8px' } });
+            newRow.appendChild(nameInput);
+            newRow.appendChild(UIBuilder.button(I18n.get('tasks_new'), () => {
+                TaskManager.create(nameInput.value, Date.now());
+                this.rerender();
+            }, { marginTop: '0', whiteSpace: 'nowrap' }));
+            sec.appendChild(newRow);
+
+            // --- historia zmiany ---
+            // Dwie linie na zadanie i ani znaku więcej: kolumna panelu jest
+            // wąska, a linia ucięta przez przeglądarkę nie mówi nic. Gdy liczby
+            // przestaną się mieścić, poprawia się szerokość panelu, a nie treść.
+            if (store.tasks.length) {
+                sec.appendChild(h('div', {
+                    textContent: I18n.get('tasks_history'),
+                    style: { marginTop: '12px', fontWeight: 'bold', fontSize: '0.9em' },
+                }));
+            }
+            store.tasks.forEach(t => {
+                const isActive = t.id === store.activeTaskId;
+                const tot = TaskManager.totals(t);
+                const span = TaskManager.span(t);
+                const box = h('div', {
+                    style: {
+                        borderLeft: `3px solid ${isActive ? CONFIG.SETTINGS_PANEL_ACCENT_COLOR : '#ccc'}`,
+                        padding: '4px 0 4px 8px', marginTop: '6px', fontSize: '0.85em', lineHeight: '1.35',
+                    },
+                });
+                const period = `${Utils.formatClock(span.from)}–${span.to === null ? I18n.get('tasks_ongoing') : Utils.formatClock(span.to)}`;
+                box.appendChild(h('div', {
+                    textContent: `${t.name} · ${period} (${Utils.formatDuration(TaskManager.workedMs(t))})`,
+                    style: { fontWeight: isActive ? 'bold' : 'normal' },
+                }));
+                box.appendChild(h('div', {
+                    textContent: `${tot.done} · ${TaskManager.rate(t).toFixed(1)}${I18n.get('statsPerHourUnit')} · ${TaskManager.percent(t)}%`,
+                }));
+                const buttons = h('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } });
+                if (!isActive) {
+                    buttons.appendChild(UIBuilder.button(I18n.get('tasks_resume'), () => {
+                        TaskManager.resume(t.id, Date.now());
+                        this.rerender();
+                    }, { padding: '2px 8px', marginTop: '0', fontSize: '0.9em' }));
+                }
+                if (store.tasks.length > 1) {
+                    buttons.appendChild(UIBuilder.button(I18n.get('tasks_delete'), () => {
+                        if (!confirm(I18n.get('tasks_deleteConfirm', { name: t.name }))) return;
+                        TaskManager.remove(t.id);
+                        this.syncTabCounters(cid);
+                        this.rerender();
+                    }, { padding: '2px 8px', marginTop: '0', fontSize: '0.9em', background: '#d9534f' }));
+                }
+                if (buttons.childNodes.length) box.appendChild(buttons);
+                sec.appendChild(box);
+            });
+            return sec;
+        },
+
+        /**
+         * Liczniki karty po zmianie w zadaniach.
+         *
+         * Suma zadań jest źródłem prawdy w jedną stronę: to ona właśnie się
+         * zmieniła, a licznik karty ma za nią nadążyć. Gdyby zostało po staremu,
+         * linia 1 pokazywałaby inną liczbę niż linia 8 dla tej samej pracy.
+         */
+        syncTabCounters(tabKey) {
+            store.tabCounters[tabKey] = TaskManager.shiftTotal(tabKey, 'done');
+            store.tabSold[tabKey] = TaskManager.shiftTotal(tabKey, 'sold');
+            store.tabNeutral[tabKey] = TaskManager.shiftTotal(tabKey, 'neutral');
+            StorageManager.saveCounter(tabKey, store.tabCounters[tabKey]);
+            StorageManager.saveSold(tabKey, store.tabSold[tabKey]);
+            StorageManager.saveNeutral(tabKey, store.tabNeutral[tabKey]);
+        },
+
+        /**
+         * LICZNIKI DZIAŁÓW — przeniesione pod zadania (1.3.0).
+         *
+         * Wpisanie liczby wprost („zrobiłem dziś 180”) to sposób na powrót do
+         * pracy po awarii maszyny, więc stoi tam, gdzie się go szuka: obok
+         * zadań, a nie na końcu panelu pod ustawieniami kolorów.
+         */
+        buildCountersSection() {
+            const sec = UIBuilder.section(I18n.get('section_globalStats'));
+            Object.values(CONFIG.KNOWN_TAB_TYPES).forEach(t => {
+                const row = h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: '5px', gap: '10px' } });
+                row.appendChild(UIBuilder.checkbox(I18n.get('includeInGlobal_known', { tabName: I18n.get(t.displayNameKey) }), store.userConfig.globalStatsContributionKnown[t.key], v => store.userConfig.globalStatsContributionKnown[t.key] = v));
+                row.appendChild(h('span', { textContent: I18n.get('settings_manualCounterInputLabel') + ':' }));
+                // Różnicę bierze na siebie aktywne zadanie, razem z licznikiem
+                // „poza mianownikiem” — kierunku wpisanych paczek nikt nie zna,
+                // więc nie mają prawa ruszyć procentu sprzedaży.
+                row.appendChild(UIBuilder.numberInput(store.tabCounters[t.key] || 0, v => {
+                    TaskManager.applyManualTotal(t.key, v);
+                    this.syncTabCounters(t.key);
+                    this.rerender();
+                }));
+                sec.appendChild(row);
+            });
+            return sec;
+        },
+
         render() {
             // 8.3.0: panel nadal składa się w całości od nowa, ale przewijanie
             // nie skacze już na początek — wcześniej było to zapisane w „znanych
@@ -2305,6 +3058,12 @@ const SCRIPT_LOGS_ENABLED = false;
             const scrollTop = this.el.scrollTop;
             this.el.innerHTML = '';
             this.el.appendChild(h('h2', { textContent: I18n.get('settingsPanelTitle'), style: { textAlign: 'center', marginTop: '0' } }));
+
+            // 0. Zadania i liczniki — na samej górze, bo to jedyna sekcja
+            // otwierana W TRAKCIE pracy. Reszta panelu to ustawienia, które
+            // stawia się raz i nie wraca do nich przez całą zmianę.
+            this.el.appendChild(this.buildTasksSection());
+            this.el.appendChild(this.buildCountersSection());
 
             // 1. Ogólne
             const secGen = UIBuilder.section(I18n.get('section_general'));
@@ -2452,17 +3211,6 @@ const SCRIPT_LOGS_ENABLED = false;
             }, { width: '100%', marginTop: '5px' }));
             this.el.appendChild(secWin);
 
-            // 5. Statystyki globalne i liczniki ręczne
-            const secGlob = UIBuilder.section(I18n.get('section_globalStats'));
-            Object.values(CONFIG.KNOWN_TAB_TYPES).forEach(t => {
-                const row = h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: '5px', gap: '10px' } });
-                row.appendChild(UIBuilder.checkbox(I18n.get('includeInGlobal_known', { tabName: I18n.get(t.displayNameKey) }), store.userConfig.globalStatsContributionKnown[t.key], v => store.userConfig.globalStatsContributionKnown[t.key] = v));
-                row.appendChild(h('span', { textContent: I18n.get('settings_manualCounterInputLabel') + ':' }));
-                row.appendChild(UIBuilder.numberInput(store.tabCounters[t.key] || 0, v => { store.tabCounters[t.key] = v; StorageManager.saveCounter(t.key, v); }));
-                secGlob.appendChild(row);
-            });
-            this.el.appendChild(secGlob);
-
             // 6. Skróty klawiszowe
             const secKeys = UIBuilder.section(I18n.get('section_keyboardShortcuts'));
             const keyOpts = CONFIG.AVAILABLE_SHORTCUT_KEYS.map(k => ({ value: k.code, text: I18n.get(k.name_key) }));
@@ -2585,6 +3333,9 @@ const SCRIPT_LOGS_ENABLED = false;
                     secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_asinClickableHint')));
                 }
                 secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
+                    I18n.get('priceCard_showSource'), pc.showSource === true,
+                    v => store.localTabConfig.priceCard.showSource = v)));
+                secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
                     I18n.get('priceCard_showLatency'), pc.showLatency === true,
                     v => store.localTabConfig.priceCard.showLatency = v)));
 
@@ -2606,6 +3357,14 @@ const SCRIPT_LOGS_ENABLED = false;
                     11, 48, pc.fontSize,
                     v => store.localTabConfig.priceCard.fontSize = v,
                     v => I18n.get('priceCard_fontSize', { value: v }))));
+
+                // Jeden kolor na wszystkie wiersze karty — tak samo, jak przy
+                // liniach okna statystyk.
+                secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_textColor'), UIBuilder.colorPickerWithAlpha(
+                    pc.colorHex, pc.alpha,
+                    hex => store.localTabConfig.priceCard.colorHex = hex,
+                    alpha => store.localTabConfig.priceCard.alpha = alpha)));
+                secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_textColorHint')));
 
                 secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_bg'), UIBuilder.colorPickerWithAlpha(
                     pc.bgColorHex, pc.bgAlpha,
@@ -2676,6 +3435,61 @@ const SCRIPT_LOGS_ENABLED = false;
             const lOpts = CONFIG.LUNCH_OPTIONS_BASE.map((o, i) => ({ value: i, text: I18n.get(o.text_key), type: o.type })).filter(o => o.type === sType);
             secLunch.appendChild(UIBuilder.row('', UIBuilder.select(lOpts, store.sessionConfig.selectedLunchIndex, v => store.sessionConfig.selectedLunchIndex = parseInt(v))));
             this.el.appendChild(secLunch);
+
+            /**
+             * 9. KOD USTAWIEŃ
+             *
+             * Dwa pola do odczytu i jedno do wklejenia. Pola są `readOnly`,
+             * a nie `disabled`: wyłączonego pola nie da się zaznaczyć, a o to
+             * tu właśnie chodzi — o skopiowanie zawartości.
+             */
+            const secCode = UIBuilder.section(I18n.get('configCode_section'));
+            secCode.appendChild(UIBuilder.hint(I18n.get('configCode_hint')));
+
+            const boxStyle = {
+                width: '100%', boxSizing: 'border-box', marginTop: '4px', padding: '6px',
+                fontFamily: CONFIG.FONT_FAMILY_OPTIONS.monospace, fontSize: '11px',
+            };
+            const readOnlyBox = (value) => h('input', {
+                type: 'text', value, readOnly: true, spellcheck: false,
+                style: boxStyle,
+                onFocus: (e) => e.target.select(),
+            });
+
+            const codeBox = readOnlyBox(ConfigCode.encode());
+            const linkBox = readOnlyBox(ConfigCode.link());
+            secCode.appendChild(UIBuilder.row(I18n.get('configCode_yours'), codeBox));
+            secCode.appendChild(UIBuilder.row(I18n.get('configCode_link'), linkBox));
+
+            secCode.appendChild(UIBuilder.button(I18n.get('configCode_select'), () => {
+                codeBox.focus();
+                codeBox.select();
+                // Schowek bywa niedostępny (brak zgody, stara przeglądarka),
+                // więc jest dodatkiem do zaznaczenia, a nie zamiast niego.
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(codeBox.value).catch(() => {});
+                }
+            }, { width: '100%', marginTop: '6px' }));
+
+            const pasteBox = h('input', {
+                type: 'text', placeholder: I18n.get('configCode_paste'), spellcheck: false,
+                style: Object.assign({}, boxStyle, { marginTop: '10px' }),
+            });
+            secCode.appendChild(pasteBox);
+            secCode.appendChild(UIBuilder.button(I18n.get('configCode_apply'), () => {
+                const report = ConfigCode.apply(pasteBox.value);
+                // Sprawozdanie ma klucze po polsku (idzie też do konsoli), więc
+                // wynik czytamy po pierwszym polu, a nie po nazwie.
+                const okay = report['kod przyjęty'] === true;
+                if (okay) {
+                    Notifier.show(I18n.get('configCode_applied', { n: report['ustawień nałożonych'] }));
+                    pasteBox.value = '';
+                    this.rerender();
+                } else {
+                    Notifier.show(String(report['powód']));
+                }
+            }, { width: '100%', marginTop: '6px' }));
+            this.el.appendChild(secCode);
 
             // Zamknięcie
             this.el.appendChild(h('hr', { style: { margin: '20px 0' } }));
@@ -3487,8 +4301,11 @@ const SCRIPT_LOGS_ENABLED = false;
             e.route = code || null;
             e.updated = Date.now();
             this.save();
+            // Trzeci kierunek (audyt) niesie znak 0: wpis zostaje w dzienniku
+            // z kodem, ale do sumy pieniędzy nie wchodzi — tak samo, jak
+            // przedmiot, przy którym kod się nie pojawił.
             Utils.log(`[DZIENNIK] ${e.asin || 'bez ASIN'} (${e.dept}): `
-                    + `${direction === 'sell' ? 'SPRZEDAŻ +' : 'NIESPRZEDAŻ -'}`
+                    + `${direction === 'sell' ? 'SPRZEDAŻ +' : direction === 'unsell' ? 'NIESPRZEDAŻ -' : 'NIEROZSTRZYGALNY '}`
                     + (e.price != null ? `${e.price} ${e.currency}` : 'bez ceny')
                     + (code ? ` (${code})` : ''));
             return true;
@@ -3828,7 +4645,24 @@ const SCRIPT_LOGS_ENABLED = false;
 
         codes() {
             return [...CONFIG.ROUTE_SELL_CODES, ...CONFIG.ROUTE_UNSELL_CODES,
-                    CONFIG.ROUTE_AMBIGUOUS_CODE];
+                    ...CONFIG.ROUTE_NEUTRAL_CODES, ...CONFIG.ROUTE_AMBIGUOUS_CODES];
+        },
+
+        /**
+         * Kierunek dla kodu, który już trafił w listę.
+         *
+         * Kolejność sprawdzeń jest kolejnością pewności: sprzedaż i niesprzedaż
+         * rozstrzygają od razu, `neutral` nie rozstrzygnie się nigdy,
+         * `ambiguous` rozstrzygnie się następną linią.
+         *
+         * @returns {'sell'|'unsell'|'neutral'|'ambiguous'|null}
+         */
+        kindOf(code) {
+            if (CONFIG.ROUTE_SELL_CODES.includes(code)) return 'sell';
+            if (CONFIG.ROUTE_UNSELL_CODES.includes(code)) return 'unsell';
+            if (CONFIG.ROUTE_NEUTRAL_CODES.includes(code)) return 'neutral';
+            if (CONFIG.ROUTE_AMBIGUOUS_CODES.includes(code)) return 'ambiguous';
+            return null;
         },
 
         codeRegex() {
@@ -3904,7 +4738,7 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!a || !a.pending) return;
             a.pending = false;
             a.direction = 'unsell';
-            Utils.log(`[KIERUNEK] ${CONFIG.ROUTE_AMBIGUOUS_CODE} bez uściślenia -> NIESPRZEDAŻ (${reason})`);
+            Utils.log(`[KIERUNEK] ${a.code || 'kod niejednoznaczny'} bez uściślenia -> NIESPRZEDAŻ (${reason})`);
             this.applyTo(a);
         },
 
@@ -3930,19 +4764,30 @@ const SCRIPT_LOGS_ENABLED = false;
         onCode(code) {
             if (!this.state) this.startItem('kod przyszedł przed początkiem');
             this.state.code = code;
-            if (code === CONFIG.ROUTE_AMBIGUOUS_CODE) {
+            const kind = this.kindOf(code);
+            if (kind === 'ambiguous') {
                 // Sam z siebie niczego nie rozstrzyga — czekamy na linię uściślającą.
                 this.state.pending = true;
                 this.state.direction = null;
                 this._ambiguous = this.state;
                 Utils.log(`[KIERUNEK] ${code} — czekam na uściślenie`);
-            } else {
-                this.state.pending = false;
-                if (this._ambiguous === this.state) this._ambiguous = null;
-                this.state.direction = CONFIG.ROUTE_SELL_CODES.includes(code) ? 'sell' : 'unsell';
-                Utils.log(`[KIERUNEK] ${code} -> ${this.state.direction === 'sell' ? 'SPRZEDAŻ' : 'NIESPRZEDAŻ'}`);
-                this.apply();
+                return;
             }
+            this.state.pending = false;
+            if (this._ambiguous === this.state) this._ambiguous = null;
+            // `neutral` jest pełnoprawnym kierunkiem, a nie brakiem kierunku:
+            // wiemy o przedmiocie wszystko, co da się wiedzieć, i właśnie
+            // dlatego wypada on z mianownika procentu.
+            this.state.direction = kind;
+            Utils.log(`[KIERUNEK] ${code} -> ${this.directionName(kind)}`);
+            this.apply();
+        },
+
+        /** Nazwa kierunku do dziennika w konsoli. */
+        directionName(dir) {
+            return dir === 'sell' ? 'SPRZEDAŻ'
+                 : dir === 'unsell' ? 'NIESPRZEDAŻ'
+                 : 'NIEROZSTRZYGALNY (poza procentem)';
         },
 
         onConfirm(dir) {
@@ -3960,8 +4805,8 @@ const SCRIPT_LOGS_ENABLED = false;
             target.pending = false;
             target.direction = dir;
             if (this._ambiguous === target) this._ambiguous = null;
-            Utils.log(`[KIERUNEK] uściślono: ${CONFIG.ROUTE_AMBIGUOUS_CODE} -> `
-                    + (dir === 'sell' ? 'SPRZEDAŻ' : 'NIESPRZEDAŻ'));
+            Utils.log(`[KIERUNEK] uściślono: ${target.code || 'kod niejednoznaczny'} -> `
+                    + this.directionName(dir));
             this.applyTo(target);
         },
 
@@ -3981,7 +4826,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * PROCENT SPRZEDAŻY — zliczenie przedmiotu, który pojechał na sprzedaż.
+         * PROCENT SPRZEDAŻY — dwa liczniki, licznik ułamka i odjęcie z mianownika.
          *
          * Liczy się DOKŁADNIE RAZ na przedmiot i dokładnie wtedy, gdy znane są oba
          * warunki: przedmiot zaliczony przez licznik i kierunek ustalony. Oba
@@ -3989,25 +4834,46 @@ const SCRIPT_LOGS_ENABLED = false;
          * każdym z nich — bez znacznika `counted` ten sam przedmiot policzyłby
          * się dwa razy.
          *
-         * Liczony jest WYŁĄCZNIE mianownik dodatni: mianownikiem procentu jest
-         * zwykły licznik przedmiotów, więc niesprzedaż i kierunek nieustalony nie
-         * wymagają własnego klucza — wchodzą do sumy przez sam licznik. Dzięki
-         * temu „trzy pierwsze przedmioty na niesprzedaż” daje 0%, a nie brak
-         * liczby, o co właśnie chodzi na początku zmiany.
+         * MIANOWNIK = zwykły licznik przedmiotów MINUS przedmioty nierozstrzygalne
+         * (1.3.0). Stąd drugi klucz: `tabNeutral`. Skutek widoczny gołym okiem —
+         * zrobionych paczek bywa więcej niż paczek, z których liczy się procent.
+         *
+         * RÓŻNICA MIĘDZY AUDYTEM A BRAKIEM KODU JEST CELOWA:
+         *   - audyt (`ROUTE_NEUTRAL_CODES`) wypada z mianownika, bo odpowiedź
+         *     „sprzedaż czy nie” zapadnie godziny później, u kogoś innego, i nie
+         *     wróci na ten ekran nigdy;
+         *   - kod, który się nie pojawił, ZOSTAJE w mianowniku, bo to zwykle
+         *     przedmiot, który jednak gdzieś pojechał — tylko my tego nie
+         *     zobaczyliśmy. Wyrzucenie go podnosiłoby procent za każdym razem,
+         *     gdy skrypt coś przeoczy, czyli nagradzałoby własne błędy.
+         *
+         * Dzięki temu „trzy pierwsze przedmioty na niesprzedaż” nadal daje
+         * uczciwe 0%, a nie brak liczby.
          *
          * Ręczna poprawka licznika (skróty klawiszowe, przyciski) tu nie wchodzi
          * — tak samo, jak nie wchodzi do dziennika wartości. Poprawia się zwykle
          * to, czego program nie zobaczył, a kierunku takiego przedmiotu nikt nie
          * zna.
          */
-        countSold(st) {
+        countDirection(st) {
             if (!st || st.counted || !st.completed || !st.direction) return;
             st.counted = true;
-            if (st.direction !== 'sell') return;
             const cid = store.currentTabInstanceId;
-            const next = (store.tabSold[cid] || 0) + 1;
-            store.tabSold[cid] = next;
-            StorageManager.saveSold(cid, next);
+            // Kierunek trafia do dwóch miejsc naraz: do liczników zmiany (linie
+            // 1, 2 i 7) i do bieżącego zadania (linia 8, podsumowanie w panelu).
+            // Jedno wywołanie, dwa zapisy — dzięki temu suma zadań nie ma jak
+            // rozjechać się z licznikiem karty.
+            if (st.direction === 'sell') {
+                const next = (store.tabSold[cid] || 0) + 1;
+                store.tabSold[cid] = next;
+                StorageManager.saveSold(cid, next);
+                TaskManager.addSold(cid);
+            } else if (st.direction === 'neutral') {
+                const next = (store.tabNeutral[cid] || 0) + 1;
+                store.tabNeutral[cid] = next;
+                StorageManager.saveNeutral(cid, next);
+                TaskManager.addNeutral(cid);
+            }
         },
 
         /**
@@ -4019,7 +4885,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * ma działać i wtedy.
          */
         applyTo(st) {
-            this.countSold(st);
+            this.countDirection(st);
             if (!st || !st.completed || !st.entryId || !st.direction) return;
             ValueLog.setDirection(st.entryId, st.direction, st.code);
         },
@@ -4030,7 +4896,7 @@ const SCRIPT_LOGS_ENABLED = false;
             const amb = this._ambiguous;
             return { kod: st.code || '—', kierunek: st.direction || 'nieokreślony',
                      'czeka na uściślenie': !!st.pending, 'przedmiot zaliczony': !!st.completed,
-                     'wisi Secondary-Sorting': amb ? (amb === st ? 'bieżący przedmiot' : 'poprzedni przedmiot') : 'nie' };
+                     'wisi kod niejednoznaczny': amb ? (amb === st ? 'bieżący przedmiot' : 'poprzedni przedmiot') : 'nie' };
         },
     };
 
@@ -4848,6 +5714,20 @@ const SCRIPT_LOGS_ENABLED = false;
             this.check();
         },
 
+        /**
+         * Kolor WSZYSTKICH tekstów karty — jedna wartość na całą kartę, dokładnie
+         * jak przy liniach okna statystyk.
+         *
+         * Liczony przy każdym applyStyle(), a nie zapamiętywany: applyStyle
+         * wywołuje się po zmianie ustawień karty, więc nowy kolor ma być widoczny
+         * od razu, a nie po przeładowaniu strony.
+         */
+        textColor() {
+            const pc = store.localTabConfig.priceCard;
+            const alpha = Utils.clampNum(pc.alpha, 0, 100, 50) / 100;
+            return `rgba(${Utils.hexToRgb(pc.colorHex)}, ${alpha.toFixed(3)})`;
+        },
+
         applyStyle() {
             if (!this.el) return;
             const pc = store.localTabConfig.priceCard;
@@ -4894,6 +5774,7 @@ const SCRIPT_LOGS_ENABLED = false;
              * a nie rysować się sam.
              */
             const SHADOW = 'text-shadow:0 1px 3px rgba(0,0,0,.6)';
+            const COLOR = 'color:' + this.textColor();
 
             // pointer-events:auto — ten jedyny wyjątek od przezroczystej karty.
             // Przy włączonym przeciąganiu jest zdejmowany: wtedy ciągnie się całą
@@ -4914,7 +5795,7 @@ const SCRIPT_LOGS_ENABLED = false;
             const linkOn = pc.asinClickable === true && !dragging;
             this.asinEl.style.cssText = [
                 'font-weight:400', 'font-size:' + px(0.8), 'line-height:1.3',
-                'color:rgba(190,215,255,.75)', 'letter-spacing:.5px', 'text-transform:uppercase',
+                COLOR, 'letter-spacing:.5px', 'text-transform:uppercase',
                 'display:' + (pc.showAsin === false ? 'none' : 'inline-block'),
                 'pointer-events:' + (linkOn ? 'auto' : 'none'),
                 'cursor:' + (linkOn ? 'pointer' : 'inherit'),
@@ -4928,17 +5809,17 @@ const SCRIPT_LOGS_ENABLED = false;
             this.priceEl.style.cssText = [
                 'font-weight:400', 'font-size:' + px(1), 'line-height:1.25',
                 'margin:' + (bgAlpha > 0 ? '4px 0 2px' : '1px 0 0'),
-                SHADOW, 'letter-spacing:.2px',
+                COLOR, SHADOW, 'letter-spacing:.2px',
             ].join(';');
 
             this.rrpEl.style.cssText = [
                 'font-weight:400', 'font-size:' + px(0.8), 'line-height:1.3',
-                'color:rgba(255,214,130,.8)', SHADOW,
+                COLOR, SHADOW,
             ].join(';');
 
             this.srcEl.style.cssText = [
                 'font-size:' + px(0.7), 'line-height:1.35',
-                'color:rgba(205,220,245,.5)', 'margin-top:' + (bgAlpha > 0 ? '4px' : '1px'),
+                COLOR, 'margin-top:' + (bgAlpha > 0 ? '4px' : '1px'),
                 SHADOW,
             ].join(';');
 
@@ -4996,6 +5877,37 @@ const SCRIPT_LOGS_ENABLED = false;
             this.render();
         },
 
+        /**
+         * DWIE ROLE DRUGIEGO I TRZECIEGO WIERSZA — i zasada, która je rozdziela.
+         *
+         * Wiersz RRP i wiersz źródła noszą raz informację dodatkową (cena
+         * katalogowa, nazwa dostawcy, czas), a raz POWÓD, DLA KTÓREGO CENY NIE MA
+         * (blokada CSP, wyczerpany limit, źródła odpracowały bez wyniku).
+         *
+         * Wyłączniki `showRrp` i `showSource` dotyczą WYŁĄCZNIE pierwszej roli.
+         * Komunikat o awarii pokazuje się zawsze: karta, która przy zablokowanym
+         * CSP pokazuje samą kreskę bez słowa wyjaśnienia, jest nie do odróżnienia
+         * od zepsutego skryptu — a to dokładnie ten rodzaj cichej awarii, którego
+         * ten projekt nie toleruje nigdzie indziej.
+         *
+         * Stany PRZEJŚCIOWE (trwa zapytanie, trwa przegląd sklepów) idą pod
+         * wyłącznikami, bo awarią nie są, a przy karcie jednolinijkowej migałyby
+         * drugim wierszem przy każdym przedmiocie.
+         *
+         * Pomocnik poniżej NIE zna wyłączników i to jest celowe: decyzję
+         * podejmuje wywołujący, bo tylko on wie, czy wpisuje informację, czy
+         * powód awarii. Tutaj zostaje jedna reguła — pusty tekst znaczy „schowaj
+         * wiersz”, żeby po wyłączeniu nie zostawała pusta linijka odsuwająca
+         * resztę karty.
+         *
+         * @param {HTMLElement} el   wiersz do zapisania
+         * @param {string} text      treść; pusta chowa wiersz
+         */
+        setLine(el, text) {
+            el.textContent = text || '';
+            el.style.display = text ? 'block' : 'none';
+        },
+
         render() {
             if (!this.el) return;
             const pc = store.localTabConfig.priceCard;
@@ -5006,7 +5918,6 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.asinEl.removeAttribute('href');   // nie ma czego otwierać
                 this.asinEl.title = '';
                 this.priceEl.textContent = '—';
-                this.priceEl.style.color = 'rgba(255,255,255,.5)';
                 this.rrpEl.textContent = ''; this.srcEl.textContent = '';
                 this.graphWrap.style.display = 'none';
                 return;
@@ -5044,20 +5955,17 @@ const SCRIPT_LOGS_ENABLED = false;
                 // po tym samym ASIN jest — pokazujemy go przygaszony, a w linii
                 // źródła piszemy, że trwa odświeżanie.
                 const prev = this.cache.get(asin);
-                if (prev && prev.status === 'ok' && prev.current && pc.showPrice) {
-                    this.priceEl.style.display = 'block';
-                    this.priceEl.textContent = prev.current.text;
-                    this.priceEl.style.color = 'rgba(124,255,168,.45)';
-                } else {
-                    this.priceEl.style.display = 'block';
-                    this.priceEl.textContent = '…';
-                    this.priceEl.style.color = 'rgba(255,255,255,.65)';
-                }
-                this.rrpEl.style.display = 'block';
+                this.priceEl.style.display = 'block';
+                this.priceEl.textContent =
+                    (prev && prev.status === 'ok' && prev.current && pc.showPrice)
+                        ? prev.current.text : '…';
                 this.rrpEl.style.textDecoration = 'none';
+                // Stan przejściowy, nie awaria — idzie pod wyłącznikami.
                 const hunting = this.searchingOther === asin;
-                this.rrpEl.textContent = I18n.get(hunting ? 'priceCard_searchingOther' : 'priceCard_searching');
-                this.srcEl.textContent = hunting ? '' : I18n.get('priceCard_refreshing');
+                this.setLine(this.rrpEl, pc.showRrp
+                    ? I18n.get(hunting ? 'priceCard_searchingOther' : 'priceCard_searching') : '');
+                this.setLine(this.srcEl, pc.showSource && !hunting
+                    ? I18n.get('priceCard_refreshing') : '');
                 return;
             }
 
@@ -5080,7 +5988,6 @@ const SCRIPT_LOGS_ENABLED = false;
             if (r && r.status === 'ok') {
                 const price = r.current || r.rrp;
                 this.priceEl.textContent = pc.showPrice && price ? price.text : '';
-                this.priceEl.style.color = '#7CFFA8';
                 this.priceEl.style.display = pc.showPrice ? 'block' : 'none';
 
                 // Druga linia: albo prawdziwa RRP (daje ją tylko jina/keepa-api),
@@ -5101,16 +6008,24 @@ const SCRIPT_LOGS_ENABLED = false;
                     this.rrpEl.style.display = pc.showRrp ? 'block' : 'none';
                 }
 
-                const bits = [r.source];
-                // Cena z OBCEGO rynku musi być widoczna jako taka, inaczej suma
-                // za zmianę niepostrzeżenie zmiesza waluty i witryny.
-                if (r.fallback && r.market) {
-                    bits.push(I18n.get('priceCard_foundIn', { host: marketplace(r.market).host.replace(/^www\./, '') }));
-                }
+                /**
+                 * Cena z OBCEGO rynku musi być widoczna jako taka i dlatego ta
+                 * jedna adnotacja NIE podlega wyłącznikowi źródła: inaczej suma
+                 * zmiany niepostrzeżenie zmieszałaby waluty i witryny, a przy
+                 * dwóch rynkach w euro nie widać tego nawet po samej kwocie.
+                 */
+                const fromOther = (r.fallback && r.market)
+                    ? I18n.get('priceCard_foundIn', { host: marketplace(r.market).host.replace(/^www\./, '') })
+                    : '';
+                const bits = [];
+                if (pc.showSource) bits.push(r.source);
+                if (fromOther) bits.push(fromOther);
+                // Czas ma własny wyłącznik i działa niezależnie od nazwy źródła:
+                // przełącznik, który nic nie robi, dopóki nie włączy się innego,
+                // jest gorszy niż brak przełącznika.
                 if (pc.showLatency) bits.push(`${r.ms}ms`);
-                if (r.stale) bits.push(I18n.get('priceCard_cached'));
-                this.srcEl.textContent = bits.join(' · ');
-                this.srcEl.style.color = r.fallback ? 'rgba(255,214,130,.85)' : 'rgba(205,220,245,.6)';
+                if (pc.showSource && r.stale) bits.push(I18n.get('priceCard_cached'));
+                this.setLine(this.srcEl, bits.join(' · '));
                 return;
             }
 
@@ -5119,7 +6034,6 @@ const SCRIPT_LOGS_ENABLED = false;
                 const both = this.csp.img && this.csp.net;
                 this.priceEl.style.display = 'block';
                 this.priceEl.textContent = '—';
-                this.priceEl.style.color = '#FFC46B';
                 this.rrpEl.style.display = 'block';
                 this.rrpEl.style.textDecoration = 'none';
                 // W trybie 'ocr' blokada obrazka znaczy nie „nie ma wykresu”,
@@ -5147,7 +6061,6 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!r) {
                 this.priceEl.style.display = 'block';
                 this.priceEl.textContent = '—';
-                this.priceEl.style.color = 'rgba(255,255,255,.5)';
                 this.rrpEl.style.display = 'block';
                 this.rrpEl.style.textDecoration = 'none';
                 this.rrpEl.textContent = '';
@@ -5158,7 +6071,6 @@ const SCRIPT_LOGS_ENABLED = false;
             // 5. Źródła odpracowały, ceny nie ma.
             this.priceEl.style.display = 'block';
             this.priceEl.textContent = '—';
-            this.priceEl.style.color = '#FF9A9A';
             this.rrpEl.style.display = 'block';
             this.rrpEl.textContent = r.reason || I18n.get('priceCard_noPrice');
             this.rrpEl.style.textDecoration = 'none';
@@ -5184,7 +6096,29 @@ const SCRIPT_LOGS_ENABLED = false;
     // 7. WEJŚCIE I WYZWALACZE
     // ==========================================
     const InputManager = {
-        seqBuffer:[],
+        /**
+         * Ostatnie naciśnięte znaki, jako ŁAŃCUCH, a nie tablica.
+         *
+         * Wcześniej była tablica sklejana przez join('') przy każdym
+         * naciśnięciu. Łańcuch z slice() robi to samo bez tworzenia tablicy
+         * pośredniej — a to kod, który chodzi na każdy klawisz przez całą
+         * dziesięciogodzinną zmianę.
+         */
+        seqBuffer: '',
+        /** Najdłuższe hasło — tyle znaków trzeba pamiętać i ani znaku więcej. */
+        _maxPasswordLen: 0,
+        /**
+         * Hasła pogrupowane po OSTATNIM znaku.
+         *
+         * Sedno optymalizacji. Bez tego każde naciśnięcie klawisza porównywałoby
+         * bufor z każdym hasłem po kolei. Tak porównanie w ogóle się nie zaczyna,
+         * dopóki naciśnięty znak nie jest ostatnim znakiem któregoś z haseł —
+         * czyli przy zwykłym pisaniu prawie nigdy. Przy 'GORDONPAULE' i 'BOMBA'
+         * pracę uruchamiają wyłącznie litery E i A.
+         *
+         * Mapa buduje się RAZ, w init(), a nie przy każdym klawiszu.
+         */
+        _passwordsByLastChar: null,
         init() {
             // 8.3.0: obsługa jest nazwana — potrzebna do Main.teardown().
             this.onKeyDown = (e) => {
@@ -5199,37 +6133,81 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (e.repeat) return;
 
                 if (store.userConfig.keyboardShortcuts.INCREMENT !== 'None' && e.code === store.userConfig.keyboardShortcuts.INCREMENT) {
-                    this.modifyCounter(1); e.preventDefault();
+                    this.modifyCounter(1, { manual: true }); e.preventDefault();
                 } else if (store.userConfig.keyboardShortcuts.DECREMENT !== 'None' && e.code === store.userConfig.keyboardShortcuts.DECREMENT) {
-                    this.modifyCounter(-1); e.preventDefault();
+                    this.modifyCounter(-1, { manual: true }); e.preventDefault();
                 }
 
                 /**
-                 * HASŁO DOSTĘPU (patrz SETTINGS_ACCESS_PASSWORD na górze pliku).
+                 * HASŁA DOSTĘPU (patrz SETTINGS_ACCESS_PASSWORDS na górze pliku).
                  *
-                 * Bufor ma dokładnie tyle znaków, ile hasło, i przesuwa się jak
-                 * okno. Dzięki temu porównanie jest zawsze na stałej długości,
-                 * a wpisywanie czegokolwiek innego wcześniej niczego nie psuje.
+                 * Bufor ma tyle znaków, ile NAJDŁUŻSZE hasło, i przesuwa się jak
+                 * okno. Hasło uznaje się za wpisane, gdy bufor KOŃCZY SIĘ na nim —
+                 * dzięki temu wpisywanie czegokolwiek wcześniej niczego nie psuje,
+                 * a hasła różnej długości żyją na jednej liście bez osobnych
+                 * buforów.
+                 *
+                 * Po trafieniu bufor jest czyszczony. To nie porządki: bez tego
+                 * hasło, które jest końcówką innego, zadziałałoby dwa razy pod
+                 * rząd, a `toggle()` otworzyłby i natychmiast zamknął panel.
                  *
                  * To nie jest zabezpieczenie kryptograficzne i nie ma nim być:
                  * chodzi wyłącznie o to, żeby panel nie otwierał się przypadkiem
                  * podczas normalnej pracy ze skanerem.
                  */
-                if (e.key.length === 1) {
-                    this.seqBuffer.push(e.key.toUpperCase());
-                    if (this.seqBuffer.length > CONFIG.SETTINGS_PANEL_ACCESS_SEQUENCE.length) this.seqBuffer.shift();
-                    if (this.seqBuffer.join('') === CONFIG.SETTINGS_PANEL_ACCESS_SEQUENCE.join('')) {
-                        SettingsPanel.toggle();
-                        this.seqBuffer =[];
+                if (this._maxPasswordLen > 0 && e.key.length === 1) {
+                    const ch = e.key.toUpperCase();
+                    this.seqBuffer = (this.seqBuffer + ch).slice(-this._maxPasswordLen);
+                    const candidates = this._passwordsByLastChar.get(ch);
+                    if (candidates) {
+                        for (const password of candidates) {
+                            if (!this.seqBuffer.endsWith(password)) continue;
+                            SettingsPanel.toggle();
+                            this.seqBuffer = '';
+                            break;
+                        }
                     }
                 }
             };
+            /**
+             * Przygotowanie haseł. Robi się RAZ, przy starcie: lista z góry pliku
+             * jest stała przez całe życie egzemplarza, więc liczenie jej przy
+             * każdym naciśnięciu klawisza byłoby czystą stratą.
+             *
+             * Kolejność w grupie zostaje taka, jak w CONFIG — od najdłuższego —
+             * więc gdy w jednym naciśnięciu pasuje kilka haseł, wygrywa dłuższe.
+             */
+            const passwords = CONFIG.SETTINGS_PANEL_ACCESS_PASSWORDS || [];
+            this._passwordsByLastChar = new Map();
+            this._maxPasswordLen = 0;
+            for (const password of passwords) {
+                if (password.length > this._maxPasswordLen) this._maxPasswordLen = password.length;
+                const last = password[password.length - 1];
+                if (!this._passwordsByLastChar.has(last)) this._passwordsByLastChar.set(last, []);
+                this._passwordsByLastChar.get(last).push(password);
+            }
+
             document.addEventListener('keydown', this.onKeyDown, true);
         },
-        modifyCounter(delta) {
+        /**
+         * @param {number} delta
+         * @param {{manual?: boolean}} [opts] — `manual` znaczy „człowiek poprawia
+         *   to, czego program nie zobaczył”. Taka paczka wchodzi do zadania
+         *   inaczej niż zaliczona automatycznie: razem z licznikiem „poza
+         *   mianownikiem”, bo jej kierunku nikt nie zna (patrz TaskManager).
+         */
+        modifyCounter(delta, opts = {}) {
             const cid = store.currentTabInstanceId;
             const cur = store.tabCounters[cid] || 0;
             const next = Math.max(0, cur + delta);
+            const applied = next - cur;
+            if (opts.manual) {
+                TaskManager.adjustManual(cid, applied);
+                store.tabNeutral[cid] = TaskManager.shiftTotal(cid, 'neutral');
+                StorageManager.saveNeutral(cid, store.tabNeutral[cid]);
+            } else {
+                TaskManager.addItem(cid);
+            }
             store.tabCounters[cid] = next;
             StorageManager.saveCounter(cid, next);
             // Przerysowanie wywołuje sam zapis do stanu (onStorePaths po
@@ -5336,10 +6314,15 @@ const SCRIPT_LOGS_ENABLED = false;
             Utils.log(`[DIAGNOSTICS] Full URL: ${fullUrl}`);
             Utils.log(`[DIAGNOSTICS] Extracted gradingMode: ${gradingMode}`);
 
+            // Działy ręczne (bez `urlKeyword`, np. OTHER) nie mają swojej karty
+            // i nie biorą udziału w rozpoznawaniu — inaczej pierwszy taki wpis
+            // wywaliłby całe uruchomienie na `undefined.toUpperCase()`.
+            const detectable = Object.values(CONFIG.KNOWN_TAB_TYPES).filter(t => !!t.urlKeyword);
+
             let known;
             if (gradingMode) {
                 // Dokładne dopasowanie
-                known = Object.values(CONFIG.KNOWN_TAB_TYPES).find(t => gradingMode === t.urlKeyword.toUpperCase());
+                known = detectable.find(t => gradingMode === t.urlKeyword.toUpperCase());
                 Utils.log(`[DIAGNOSTICS] Strict match attempt result:`, known ? known.key : 'NOT_FOUND');
             }
 
@@ -5348,7 +6331,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 // KRYTYCZNIE WAŻNE: sortujemy klucze po długości malejąco.
                 // Gwarantuje to, że CRETURN_REFURB (14 znaków) sprawdzi się PRZED
                 // CRETURN (7 znaków).
-                const sortedTypes = Object.values(CONFIG.KNOWN_TAB_TYPES).sort((a, b) => b.urlKeyword.length - a.urlKeyword.length);
+                const sortedTypes = detectable.slice().sort((a, b) => b.urlKeyword.length - a.urlKeyword.length);
                 known = sortedTypes.find(t => fullUrl.includes(t.urlKeyword.toUpperCase()));
                 Utils.log(`[DIAGNOSTICS] Fallback substring match result:`, known ? known.key : 'NOT_FOUND');
             }
@@ -5425,6 +6408,12 @@ const SCRIPT_LOGS_ENABLED = false;
             // Dostęp z konsoli należał do zdjętego egzemplarza: zostawić go znaczy
             // trzymać w pamięci cały stan i wszystkie menedżery.
             try { delete window[CONFIG.SCRIPT_ID_PREFIX + 'API']; delete window.SH; } catch (e) { /* własność mogła być niekasowalna — rozbiórki to nie zatrzymuje */ }
+            // Skrót `config` zdejmujemy TYLKO wtedy, gdy to my go postawiliśmy:
+            // inaczej rozbiórka zabrałaby stronie jej własną funkcję.
+            if (this.ownsConfigAlias) {
+                try { delete window.config; } catch (e) { /* jak wyżej */ }
+                this.ownsConfigAlias = false;
+            }
             // Egzemplarza na stronie już nie ma — więc i zamek na powtórne
             // uruchomienie się zdejmuje, inaczej poprawionego pliku nie dałoby się
             // już wkleić.
@@ -5434,6 +6423,28 @@ const SCRIPT_LOGS_ENABLED = false;
 
         init() {
             if (window[CONFIG.SCRIPT_ID_PREFIX + 'INIT']) {
+                /**
+                 * Kod ustawień z zakładki wchodzi MIMO TO — powtórne kliknięcie
+                 * zakładki z innym kodem jest jedynym sposobem zmiany wyglądu
+                 * bez przeładowania strony, a przeładowanie w środku zmiany
+                 * kosztuje tyle, co wklejenie skryptu od nowa.
+                 *
+                 * Ale nakłada się na egzemplarz, KTÓRY JUŻ STOI, przez jego
+                 * własne `SH.config`. Ten, który właśnie się nie uruchomi, ma
+                 * osobny stan w swoim domknięciu: zapis do niego poszedłby
+                 * w próżnię, a przy okazji nadpisałby w magazynie ustawienia
+                 * tamtego egzemplarza.
+                 *
+                 * Gdy na stronie stoi wydanie starsze niż 1.2.0, `config` tam
+                 * nie istnieje — wtedy kod po prostu przepada i trzeba odświeżyć
+                 * stronę. Zgadywanie po wnętrznościach cudzego egzemplarza
+                 * kosztowałoby więcej, niż jest warte.
+                 */
+                const bootCode = ConfigCode.takeBoot();
+                const running = window[CONFIG.SCRIPT_ID_PREFIX + 'API'];
+                if (bootCode && running && typeof running.config === 'function') {
+                    running.config(bootCode);
+                }
                 Utils.log('Skrypt już działa na tej stronie — powtórne wklejenie zignorowane. Aby zrestartować, przeładuj stronę (F5).');
                 return;
             }
@@ -5450,6 +6461,18 @@ const SCRIPT_LOGS_ENABLED = false;
                 // strony nigdy.
                 this.identifyTab();
                 StorageManager.loadAll();
+
+                /**
+                 * Kod ustawień z zakładki — PO wczytaniu magazynu, PRZED
+                 * postawieniem interfejsu.
+                 *
+                 * Po wczytaniu, bo inaczej `loadAll()` nadpisałby to, co przyszło
+                 * z kodu, zapisanym wcześniej stanem. Przed interfejsem, bo okno
+                 * ma się narysować od razu takie, jakiego człowiek chce — a nie
+                 * mrugnąć domyślnym wyglądem. Zapis do magazynu robi `saveState()`
+                 * kilka linii niżej, po podniesieniu `store.initialized`.
+                 */
+                ConfigCode.applyBoot();
 
                 // Dane poprzedniej zmiany na maszynach bez resetu sesji.
                 // Dziennik wartości podnosi się PRZED sprawdzeniem zmiany:
@@ -5476,6 +6499,17 @@ const SCRIPT_LOGS_ENABLED = false;
                 // samym komputerze).
                 ShiftManager.update();
                 SessionReset.pruneTabInstances(false);
+
+                /**
+                 * Zadania PO ustaleniu zmiany, a przed pierwszym przedmiotem.
+                 *
+                 * Po ustaleniu, bo zadanie domyślne zaczyna się razem ze zmianą,
+                 * a `shiftCalculatedStartTime` liczy dopiero ShiftManager.update()
+                 * linijkę wyżej. Przed przedmiotem, bo licznik nie ma prawa
+                 * zaliczyć paczki, dla której nie ma gdzie jej zapisać —
+                 * AutoTrigger rusza znacznie niżej.
+                 */
+                TaskManager.init();
 
                 store.initialized = true;
                 StorageManager.saveState();
@@ -5550,6 +6584,21 @@ const SCRIPT_LOGS_ENABLED = false;
                 onStorePaths(['userConfig', 'sessionConfig', 'localTabConfig'],
                              () => StorageManager.scheduleSave());
 
+                /**
+                 * Skrót `config("0x…")` bez przedrostka SH.
+                 *
+                 * Zakładka w przeglądarce wkleja się jednym ciągiem i krótsza
+                 * nazwa jest tam wygodniejsza. Nazwa jest jednak POSPOLITA,
+                 * a strona nie jest nasza — więc zajmujemy ją TYLKO wtedy, gdy
+                 * jest wolna. Gdy T-REX ma własne `window.config`, zostaje
+                 * `SH.config(...)`, które nie koliduje z niczym i dlatego to
+                 * ono stoi w kopiowanym z panelu odnośniku.
+                 */
+                if (typeof window.config === 'undefined') {
+                    window.config = (code) => ConfigCode.apply(code);
+                    this.ownsConfigAlias = true;
+                }
+
                 this.startShiftWatch();
                 StatsWindowRenderer.renderContent();
 
@@ -5563,8 +6612,38 @@ const SCRIPT_LOGS_ENABLED = false;
                     KeepaOCR, ValueLog, FxRates, Routing,
                     // 9.2.0 — potrzebne testom i diagnostyce
                     Utils, PriceModule, StatsWindowRenderer, CSSManager, LINE_KEYS,
-                    DEFAULT_LINE_CONFIG, DEFAULT_LOCAL_CONFIG,
+                    DEFAULT_LINE_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_USER_CONFIG,
                     priceModuleOn,
+                    // 1.1.0 — hasła dostępu. InputManager trzyma bufor i mapę
+                    // haseł, normalizeAccessPasswords pokazuje, co naprawdę
+                    // wyjdzie z listy wpisanej na górze pliku: po edycji warto
+                    // sprawdzić SH.normalizeAccessPasswords(['moje', 'hasła'])
+                    // zamiast zgadywać, czy literówka przeszła.
+                    InputManager, normalizeAccessPasswords,
+                    /**
+                     * KOD KONFIGURACJI (1.2.0).
+                     *
+                     * Funkcje, a nie sam obiekt: `SH.config('0x…')` ma być
+                     * krótkim poleceniem do wklejenia w konsoli, a nie ścieżką
+                     * przez wnętrzności. Sam rejestr stoi niżej, pod własną
+                     * nazwą, dla testów i dla pytania „pod jakim numerem siedzi
+                     * to ustawienie”.
+                     */
+                    config: (code) => ConfigCode.apply(code),
+                    configCode: () => ConfigCode.encode(),
+                    configLink: () => ConfigCode.link(),
+                    ConfigCode,
+                    /**
+                     * ZADANIA (1.3.0). `SH.tasks()` wypisuje podsumowanie
+                     * wszystkich zadań zmiany, reszta to sam menedżer — do
+                     * przełączania z konsoli, gdy panel jest akurat zamknięty.
+                     */
+                    TaskManager,
+                    tasks: () => TaskManager.info(),
+                    // Przeciąganie okna i karty — wystawione dla diagnostyki
+                    // („czemu nie da się przesunąć okna”) i dla testów, które
+                    // odtwarzają pełny gest myszy.
+                    DragDropManager, PriceCardDrag,
                     /**
                      * Włączenie/wyłączenie modułu cen z konsoli. Robi dokładnie
                      * to samo, co przełącznik w panelu ustawień.
@@ -5696,7 +6775,1008 @@ const SCRIPT_LOGS_ENABLED = false;
         }
     };
 
-    // ─── src/23-presets.js ───
+    // ─── src/23-config-code.js ───
+    // ==========================================
+    // 10. KOD KONFIGURACJI (1.2.0)
+    // ==========================================
+    /**
+     * PRZENOSZENIE USTAWIEŃ JEDNYM CIĄGIEM SZESNASTKOWYM.
+     *
+     * Człowiek ustawia sobie wygląd i wyłączniki na jednej maszynie, kopiuje
+     * z panelu jeden ciąg — `0x01...` — i na dowolnej innej maszynie dostaje
+     * dokładnie to samo. Ciąg wkleja się albo do konsoli (`SH.config("0x…")`),
+     * albo od razu w zakładce przeglądarki, doklejony za wywołaniem skryptu.
+     *
+     * =====================================================================
+     * DLACZEGO TO NIE JEST STAŁY UKŁAD BITÓW
+     * =====================================================================
+     * Pomysł „każde ustawienie dostaje swoje bity pod stałym adresem” jest
+     * kuszący i działa dokładnie do pierwszego wydania, w którym coś się zmieni.
+     * Załamuje się na trzech rzeczach naraz:
+     *
+     *   1. STARY SKRYPT, NOWY KOD. Doszło ustawienie, więc ciąg jest dłuższy.
+     *      Stary skrypt nie wie, gdzie kończy się to, co zna — bo przy stałym
+     *      układzie długość pola jest wiedzą, a nie częścią danych. Musi odrzucić
+     *      cały kod.
+     *   2. NOWY SKRYPT, STARY KOD. Trzeba pamiętać KAŻDY historyczny układ bitów
+     *      i wybierać go po numerze wersji. To rośnie w nieskończoność.
+     *   3. CZŁOWIEK. Przydzielanie offsetów bitowych ręcznie to praca, w której
+     *      pomyłka jest cicha: kod się wczyta, tylko ustawienia wylądują nie tam.
+     *
+     * Dlatego ciąg jest zbiorem SAMOOPISUJĄCYCH SIĘ REKORDÓW, a nie mapą bitów:
+     *
+     *      [id: 2 bajty][długość: 1 bajt][wartość: tyle bajtów, ile podano]
+     *
+     * Długość w każdym rekordzie załatwia punkt 1: nieznany rekord da się
+     * PRZESKOCZYĆ, nie rozumiejąc go. Stały, nigdy nierecyklingowany numer `id`
+     * załatwia punkt 2: nowy skrypt rozpoznaje stare rekordy po numerze, a nie
+     * po pozycji. Rejestr poniżej załatwia punkt 3: numer, ścieżka i typ stoją
+     * w jednej linii, obok siebie.
+     *
+     * To jest ten sam pomysł, na którym stoi protobuf, sprowadzony do rozmiaru
+     * tego projektu. Wejście i wyjście pozostaje takie, jak miało być: ciąg
+     * szesnastkowy, wielkość liter bez znaczenia.
+     *
+     * =====================================================================
+     * KOD ZAWIERA TYLKO TO, CO RÓŻNI SIĘ OD WARTOŚCI DOMYŚLNYCH
+     * =====================================================================
+     * I to jest druga decyzja, ważniejsza od formatu.
+     *
+     * Kod jest ŁATKĄ, a nie zdjęciem całej konfiguracji. Kto zmienił trzy rzeczy,
+     * ma w kodzie trzy rekordy. Skutek, dla którego to robimy, jest jednak inny
+     * niż długość ciągu: gdy w następnym wydaniu zmieni się wartość domyślna
+     * czegoś, czego ten człowiek nigdy nie ruszał, on tę nową wartość DOSTANIE.
+     * Przy zdjęciu całej konfiguracji zostałby na zawsze przy starych domyślnych,
+     * nie wiedząc o tym — dokładnie tak, jak dzieje się to z zapisaną
+     * konfiguracją w localStorage.
+     *
+     * =====================================================================
+     * BEZPIECZEŃSTWO
+     * =====================================================================
+     * Kod przychodzi z zewnątrz: z czatu, z maila, z cudzej zakładki. Dlatego
+     * dekodowanie NIE tworzy pól — zapisuje wyłącznie pod ścieżki wymienione
+     * w rejestrze, i wyłącznie wartościami typu, który rejestr przewiduje.
+     * Liczby przechodzą przez własne granice, kolory przez sprawdzenie formy.
+     * Nieznany numer, zła długość, śmieciowa wartość — pomijane pojedynczo,
+     * z adnotacją w sprawozdaniu, a nie wywracające całego kodu.
+     */
+    const ConfigCode = {
+        /** Wersja FORMATU (nie skryptu). Zmienia się tylko przy zmianie ramki. */
+        FORMAT: 0x01,
+
+        /**
+         * KOD PODSTAWIONY PRZED URUCHOMIENIEM.
+         *
+         * Zakładka z ustawieniami (patrz `link`) najpierw wpisuje kod do okna
+         * pod tę nazwę, a dopiero potem ściąga i wykonuje plik. Dzięki temu
+         * ustawienia wchodzą WEWNĄTRZ `Main.init()`, zaraz po wczytaniu stanu
+         * z magazynu — czyli przed pierwszym rysowaniem okna.
+         *
+         * Wcześniejszy pomysł — wykonać plik, a zaraz za nim, w tej samej linii,
+         * `SH.config('0x…')` — miał dwie dziury. Po pierwsze `SH` powstaje
+         * dopiero w `Main.init()`, a ten czeka na `DOMContentLoaded`, gdy strona
+         * jeszcze się wczytuje: wywołanie tuż po wykonaniu pliku trafiało wtedy
+         * w niebyt. Po drugie nawet przy
+         * gotowej stronie okno zdążyło się narysować ustawieniami domyślnymi
+         * i dopiero potem przeskakiwało na swoje — widoczne mrugnięcie.
+         *
+         * Nazwa jest długa i z przedrostkiem skryptu, bo to cudza strona.
+         */
+        BOOT_GLOBAL: CONFIG.SCRIPT_ID_PREFIX + 'CONFIG_CODE',
+
+        /**
+         * Listy wartości dopuszczalnych dla pól wyboru.
+         *
+         * KOLEJNOŚĆ JEST CZĘŚCIĄ FORMATU: w kodzie leci indeks, nie tekst.
+         * Nowe pozycje wolno DOPISYWAĆ NA KOŃCU; przestawienie albo usunięcie
+         * pozycji zmienia znaczenie już rozdanych kodów. Listy stoją tutaj,
+         * a nie są czytane z CONFIG, właśnie po to: tam kolejność jest dowolna.
+         */
+        ENUMS: {
+            font: ['default', 'monospace', 'sans_serif_thin'],
+            source: ['ocr', 'graph', 'jina'],
+            graphMode: ['legend', 'right', 'full'],
+            language: ['pl', 'en', 'ru'],
+            marketplace: ['de', 'co.uk', 'com', 'it', 'fr', 'es', 'nl', 'ca', 'se', 'com.be', 'pl'],
+        },
+
+        /**
+         * REJESTR USTAWIEŃ — jedyne miejsce, które trzeba ruszyć, dodając
+         * ustawienie do kodu.
+         *
+         * Numery przydzielone są blokami, żeby dopisywanie było oczywiste:
+         *
+         *      0x0001–0x00FF   okno statystyk i strona
+         *      0x0100–0x01FF   linie 1–7, po 0x10 na linię
+         *      0x0200–0x02FF   karta ceny
+         *      0x0300–0x03FF   ustawienia wspólne dla wszystkich kart
+         *
+         * ZASADA, KTÓREJ NIE WOLNO ZŁAMAĆ: numer raz wydany nie wraca do obiegu.
+         * Ustawienie, które znika ze skryptu, znika też z tego rejestru — ale
+         * jego numer zostaje spalony na zawsze, bo u kogoś w kieszeni leży kod,
+         * w którym ten numer coś znaczy.
+         *
+         * `root` mówi, do której gałęzi stanu trafia wartość: 'local' to
+         * ustawienia tej karty, 'user' — wspólne dla wszystkich.
+         */
+        REGISTRY: [
+            // --- okno statystyk i strona ---
+            { id: 0x0001, root: 'local', path: 'statsWindowFontFamily', type: 'enum', list: 'font' },
+            { id: 0x0002, root: 'local', path: 'statsWindowBgColorHex', type: 'color' },
+            { id: 0x0003, root: 'local', path: 'statsWindowBgAlpha', type: 'u8', min: 0, max: 100 },
+            { id: 0x0004, root: 'local', path: 'statsWindowPosition.left', type: 'text' },
+            { id: 0x0005, root: 'local', path: 'statsWindowPosition.top', type: 'text' },
+            { id: 0x0006, root: 'local', path: 'statsWindowPosition.bottom', type: 'text' },
+            { id: 0x0007, root: 'local', path: 'pageOverlayOpacity', type: 'u8', min: 0, max: 100 },
+            { id: 0x0008, root: 'local', path: 'pageIndicatorTextVisible', type: 'bool' },
+
+            // --- linie 1–7 ---
+            ...['line1_currentTab', 'line2_globalSummary', 'line3_shiftInfo', 'line4_lunchInfo',
+                'line5_realTimeClock', 'line6_valueSum', 'line7_compact',
+                // 1.3.0 — linia 8 dostaje blok 0x0170, kolejny wolny po linii 7.
+                'line8_taskInfo'].flatMap((key, i) => {
+                const base = 0x0100 + i * 0x10;
+                return [
+                    { id: base, root: 'local', path: `linesConfig.${key}.visible`, type: 'bool' },
+                    { id: base + 1, root: 'local', path: `linesConfig.${key}.colorHex`, type: 'color' },
+                    { id: base + 2, root: 'local', path: `linesConfig.${key}.alpha`, type: 'u8', min: 0, max: 100 },
+                    { id: base + 3, root: 'local', path: `linesConfig.${key}.fontSize`, type: 'u8', min: 6, max: 96 },
+                ];
+            }),
+            // Wielokolor i barwy działów ma tylko linia 2 — stąd osobno,
+            // w jej własnym bloku (0x0110).
+            { id: 0x0114, root: 'local', path: 'linesConfig.line2_globalSummary.multicolor', type: 'bool' },
+            { id: 0x0115, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.CRET', type: 'color' },
+            { id: 0x0116, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.REFURB', type: 'color' },
+            { id: 0x0117, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.WHD', type: 'color' },
+            // 1.3.2 — czwarty, ręczny dział. Numery kolejne i nigdy wcześniej
+            // nie wydane, więc stare kody nie zmieniają znaczenia.
+            { id: 0x0118, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.OTHER', type: 'color' },
+
+            // --- karta ceny ---
+            { id: 0x0200, root: 'local', path: 'priceCard.moduleEnabled', type: 'bool' },
+            { id: 0x0201, root: 'local', path: 'priceCard.visible', type: 'bool' },
+            { id: 0x0202, root: 'local', path: 'priceCard.source', type: 'enum', list: 'source' },
+            { id: 0x0203, root: 'local', path: 'priceCard.logValues', type: 'bool' },
+            { id: 0x0204, root: 'local', path: 'priceCard.marketFallback', type: 'bool' },
+            { id: 0x0205, root: 'local', path: 'priceCard.showPrice', type: 'bool' },
+            { id: 0x0206, root: 'local', path: 'priceCard.showRrp', type: 'bool' },
+            { id: 0x0207, root: 'local', path: 'priceCard.showGraph', type: 'bool' },
+            { id: 0x0208, root: 'local', path: 'priceCard.showSource', type: 'bool' },
+            { id: 0x0209, root: 'local', path: 'priceCard.showAsin', type: 'bool' },
+            { id: 0x020a, root: 'local', path: 'priceCard.asinClickable', type: 'bool' },
+            { id: 0x020b, root: 'local', path: 'priceCard.showLatency', type: 'bool' },
+            { id: 0x020c, root: 'local', path: 'priceCard.fontFamily', type: 'enum', list: 'font' },
+            { id: 0x020d, root: 'local', path: 'priceCard.graphMode', type: 'enum', list: 'graphMode' },
+            { id: 0x020e, root: 'local', path: 'priceCard.width', type: 'u16', min: 120, max: 1600 },
+            { id: 0x020f, root: 'local', path: 'priceCard.fontSize', type: 'u8', min: 6, max: 96 },
+            { id: 0x0210, root: 'local', path: 'priceCard.colorHex', type: 'color' },
+            { id: 0x0211, root: 'local', path: 'priceCard.alpha', type: 'u8', min: 0, max: 100 },
+            { id: 0x0212, root: 'local', path: 'priceCard.bgColorHex', type: 'color' },
+            { id: 0x0213, root: 'local', path: 'priceCard.bgAlpha', type: 'u8', min: 0, max: 100 },
+            { id: 0x0214, root: 'local', path: 'priceCard.position.left', type: 'text' },
+            { id: 0x0215, root: 'local', path: 'priceCard.position.top', type: 'text' },
+
+            // --- wspólne dla wszystkich kart ---
+            { id: 0x0300, root: 'user', path: 'language', type: 'enum', list: 'language' },
+            { id: 0x0301, root: 'user', path: 'marketplace', type: 'enum', list: 'marketplace' },
+            { id: 0x0302, root: 'user', path: 'triggerMutationDebounceMs', type: 'u16', min: 0, max: 5000 },
+            { id: 0x0303, root: 'user', path: 'settingsPanelWidth', type: 'u16', min: 200, max: 2000 },
+            { id: 0x0304, root: 'user', path: 'globalStatsContributionKnown.CRET', type: 'bool' },
+            { id: 0x0305, root: 'user', path: 'globalStatsContributionKnown.REFURB', type: 'bool' },
+            { id: 0x0306, root: 'user', path: 'globalStatsContributionKnown.WHD', type: 'bool' },
+            { id: 0x0309, root: 'user', path: 'globalStatsContributionKnown.OTHER', type: 'bool' },
+            { id: 0x0307, root: 'user', path: 'keyboardShortcuts.INCREMENT', type: 'text' },
+            { id: 0x0308, root: 'user', path: 'keyboardShortcuts.DECREMENT', type: 'text' },
+        ],
+
+        // ---------------- pomocnicze ----------------
+        _root(name) {
+            return name === 'user' ? store.userConfig : store.localTabConfig;
+        },
+        _defaults(name) {
+            return name === 'user' ? DEFAULT_USER_CONFIG : DEFAULT_LOCAL_CONFIG;
+        },
+        /** Wartość spod ścieżki albo undefined, gdy którykolwiek człon nie istnieje. */
+        _get(obj, path) {
+            return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+        },
+        /** Zapis pod ścieżkę BEZ tworzenia brakujących gałęzi — patrz bezpieczeństwo wyżej. */
+        _set(obj, path, value) {
+            const parts = path.split('.');
+            const last = parts.pop();
+            const target = parts.reduce((o, k) => (o == null ? undefined : o[k]), obj);
+            if (!target || typeof target !== 'object') return false;
+            target[last] = value;
+            return true;
+        },
+
+        // ---------------- wartość <-> bajty ----------------
+        /** @returns {number[]|null} bajty wartości albo null, gdy nie da się zakodować. */
+        _toBytes(entry, value) {
+            switch (entry.type) {
+                case 'bool':
+                    return typeof value === 'boolean' ? [value ? 1 : 0] : null;
+                case 'u8': {
+                    const n = Math.round(Number(value));
+                    return isFinite(n) && n >= 0 && n <= 255 ? [n] : null;
+                }
+                case 'u16': {
+                    const n = Math.round(Number(value));
+                    return isFinite(n) && n >= 0 && n <= 65535 ? [(n >> 8) & 0xff, n & 0xff] : null;
+                }
+                case 'color': {
+                    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(value));
+                    return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+                }
+                case 'enum': {
+                    const i = this.ENUMS[entry.list].indexOf(String(value));
+                    return i >= 0 ? [i] : null;
+                }
+                case 'text': {
+                    // Tylko drukowalne ASCII. Wszystkie wartości tego typu to
+                    // miary CSS ('20px', '15%') i nazwy klawiszy ('ShiftRight'),
+                    // więc pełny UTF-8 byłby kodem, którego nikt nigdy nie wykona.
+                    const s = String(value);
+                    const out = [];
+                    for (let i = 0; i < s.length; i++) {
+                        const c = s.charCodeAt(i);
+                        if (c < 0x20 || c > 0x7e) return null;
+                        out.push(c);
+                    }
+                    return out.length <= 255 ? out : null;
+                }
+                default:
+                    return null;
+            }
+        },
+        /** @returns {{ok: boolean, value?: *}} */
+        _fromBytes(entry, bytes) {
+            const bad = { ok: false };
+            switch (entry.type) {
+                case 'bool':
+                    return bytes.length === 1 ? { ok: true, value: bytes[0] !== 0 } : bad;
+                case 'u8':
+                case 'u16': {
+                    const width = entry.type === 'u8' ? 1 : 2;
+                    if (bytes.length !== width) return bad;
+                    const n = width === 1 ? bytes[0] : (bytes[0] << 8) | bytes[1];
+                    // Granice z rejestru, a nie z kodu: kod przyszedł z zewnątrz.
+                    const min = entry.min === undefined ? 0 : entry.min;
+                    const max = entry.max === undefined ? 65535 : entry.max;
+                    return { ok: true, value: Math.max(min, Math.min(max, n)) };
+                }
+                case 'color': {
+                    if (bytes.length !== 3) return bad;
+                    const hex = bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+                    return { ok: true, value: '#' + hex };
+                }
+                case 'enum': {
+                    if (bytes.length !== 1) return bad;
+                    const list = this.ENUMS[entry.list];
+                    return bytes[0] < list.length ? { ok: true, value: list[bytes[0]] } : bad;
+                }
+                case 'text': {
+                    let s = '';
+                    for (const b of bytes) {
+                        if (b < 0x20 || b > 0x7e) return bad;
+                        s += String.fromCharCode(b);
+                    }
+                    return { ok: true, value: s };
+                }
+                default:
+                    return bad;
+            }
+        },
+
+        // ---------------- kodowanie ----------------
+        /**
+         * Kod bieżących ustawień. Wchodzi tylko to, co różni się od domyślnych.
+         * @returns {string} np. `0x0101000101...`
+         */
+        encode() {
+            const bytes = [this.FORMAT];
+            for (const entry of this.REGISTRY) {
+                const current = this._get(this._root(entry.root), entry.path);
+                if (current === undefined) continue;
+                const fallback = this._get(this._defaults(entry.root), entry.path);
+                if (current === fallback) continue;
+                const value = this._toBytes(entry, current);
+                if (!value) continue;
+                bytes.push((entry.id >> 8) & 0xff, entry.id & 0xff, value.length, ...value);
+            }
+            bytes.push(bytes.reduce((a, b) => (a + b) & 0xff, 0));
+            return '0x' + bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+        },
+
+        // ---------------- dekodowanie ----------------
+        /**
+         * Rozbiera kod na łatkę. NIE dotyka stanu — to robi apply().
+         *
+         * @returns {{ok: boolean, error?: string, patch?: object, stats?: object}}
+         *   `stats.unknown` to rekordy o nieznanym numerze: kod z nowszego
+         *   wydania wczyta się w starszym skrypcie, tracąc tylko to, czego ten
+         *   skrypt i tak nie umie ustawić.
+         */
+        decode(text) {
+            const clean = String(text == null ? '' : text).trim().replace(/^0x/i, '').replace(/[\s_-]/g, '');
+            if (!clean) return { ok: false, error: 'kod jest pusty' };
+            if (!/^[0-9a-f]+$/i.test(clean)) return { ok: false, error: 'kod zawiera znak spoza zapisu szesnastkowego' };
+            if (clean.length % 2) return { ok: false, error: 'kod ma nieparzystą liczbę znaków' };
+
+            const bytes = [];
+            for (let i = 0; i < clean.length; i += 2) bytes.push(parseInt(clean.substr(i, 2), 16));
+            if (bytes.length < 2) return { ok: false, error: 'kod jest za krótki' };
+
+            const given = bytes[bytes.length - 1];
+            const counted = bytes.slice(0, -1).reduce((a, b) => (a + b) & 0xff, 0);
+            if (given !== counted) return { ok: false, error: 'suma kontrolna się nie zgadza — kod jest niepełny albo przekłamany' };
+            if (bytes[0] !== this.FORMAT) {
+                return { ok: false, error: `nieznana wersja formatu (${bytes[0]}), ten skrypt rozumie ${this.FORMAT}` };
+            }
+
+            const byId = new Map(this.REGISTRY.map(e => [e.id, e]));
+            const patch = { local: {}, user: {} };
+            const stats = { applied: 0, unknown: 0, invalid: 0 };
+            let i = 1;
+            while (i < bytes.length - 1) {
+                if (i + 3 > bytes.length - 1) { stats.invalid++; break; }
+                const id = (bytes[i] << 8) | bytes[i + 1];
+                const len = bytes[i + 2];
+                const from = i + 3;
+                if (from + len > bytes.length - 1) { stats.invalid++; break; }
+                const value = bytes.slice(from, from + len);
+                i = from + len;
+
+                const entry = byId.get(id);
+                if (!entry) { stats.unknown++; continue; }
+                const parsed = this._fromBytes(entry, value);
+                if (!parsed.ok) { stats.invalid++; continue; }
+                patch[entry.root][entry.path] = parsed.value;
+                stats.applied++;
+            }
+            return { ok: true, patch, stats };
+        },
+
+        /**
+         * Rozbiera kod i nakłada go na bieżący stan.
+         *
+         * Zapis idzie POD ŚCIEŻKI Z REJESTRU, po jednej wartości — a nie
+         * podmianą całych gałęzi. Dzięki temu każda zmiana przechodzi przez
+         * magistralę stanu i interfejs odświeża się sam, bez osobnego wołania
+         * renderów.
+         *
+         * @returns {object} sprawozdanie do konsoli albo do panelu.
+         */
+        apply(text) {
+            const res = this.decode(text);
+            if (!res.ok) {
+                Utils.error(`[KOD] ${res.error}`);
+                return { 'kod przyjęty': false, powód: res.error };
+            }
+            let written = 0;
+            for (const root of ['local', 'user']) {
+                for (const [path, value] of Object.entries(res.patch[root])) {
+                    if (this._set(this._root(root), path, value)) written++;
+                }
+            }
+            StorageManager.saveState();
+            Utils.log(`[KOD] wczytano ustawień: ${written}`);
+            return {
+                'kod przyjęty': true,
+                'ustawień nałożonych': written,
+                'rekordów nieznanych (nowszy skrypt je zrozumie)': res.stats.unknown,
+                'rekordów odrzuconych': res.stats.invalid,
+            };
+        },
+
+        /**
+         * Kod podstawiony przed uruchomieniem — wołane z `Main.init()`.
+         *
+         * Zmienna znika z okna niezależnie od tego, czy kod był poprawny:
+         * zostawiona po sobie śmieciowa własność na cudzej stronie jest
+         * dokładnie tym, czego skrypt ma nie robić.
+         *
+         * @returns {object|null} sprawozdanie albo null, gdy nic nie podstawiono.
+         */
+        applyBoot() {
+            const code = this.takeBoot();
+            return code ? this.apply(code) : null;
+        },
+
+        /**
+         * Odczytuje i USUWA kod podstawiony przed uruchomieniem.
+         *
+         * Osobno od `applyBoot`, bo jest druga droga: gdy skrypt już stoi na
+         * stronie, kod ma trafić do TAMTEGO egzemplarza (przez jego `SH.config`),
+         * a nie do tego, który właśnie się nie uruchomi — patrz `Main.init`.
+         *
+         * @returns {string|null} kod albo null, gdy nic sensownego nie podstawiono.
+         */
+        takeBoot() {
+            const name = this.BOOT_GLOBAL;
+            const code = window[name];
+            try { delete window[name]; } catch (e) { window[name] = undefined; }
+            return typeof code === 'string' && code ? code : null;
+        },
+
+        /**
+         * Gotowa zakładka: wywołanie skryptu z doklejonym kodem bieżących ustawień.
+         *
+         * To jest TEKST DO SKOPIOWANIA, a nie kod do wykonania: człowiek wkleja
+         * go jako adres zakładki i uruchamia sam, klikając ją. Skrypt niczego
+         * tutaj nie wywołuje — stąd wyłączona reguła lintera, która widzi samo
+         * słowo `javascript:` w ciągu znaków. Test artefaktu pilnuje, że jest to
+         * jedyne miejsce w całym pliku ze słowem `eval`.
+         */
+        link() {
+            // Kolejność w tym ciągu jest całym mechanizmem: najpierw kod trafia
+            // do okna, potem rusza pobieranie pliku. Skrypt zastaje go gotowego
+            // i nakłada sam, w środku uruchomienia — bez mrugnięcia domyślnym
+            // wyglądem i bez zgadywania, czy `SH` zdążyło już powstać.
+            // eslint-disable-next-line no-script-url -- tekst zakładki, patrz wyżej
+            return "javascript:(async()=>{window['" + this.BOOT_GLOBAL + "']='" + this.encode()
+                + "';const r=await fetch('" + CONFIG.RELEASE_URL
+                + "',{cache:'no-store'});eval(await r.text());})();void 0;";
+        },
+    };
+
+    // ─── src/24-tasks.js ───
+    // ==========================================
+    // 11. MENEDŻER ZADAŃ (1.3.0)
+    // ==========================================
+    /**
+     * ZADANIA (TASKI): OSOBNY ZEGAR DLA KAŻDEGO PROCESU PRACY.
+     *
+     * =====================================================================
+     * PROBLEM, KTÓRY TO ROZWIĄZUJE
+     * =====================================================================
+     * Tempo liczyło się od POCZĄTKU ZMIANY — godziny wpisanej na stałe (6:30
+     * albo 18:30). Kto przyszedł do procesu trzy godziny później i zrobił trzy
+     * paczki w sześć minut, widział „1 paczka na godzinę” zamiast „30 na
+     * godzinę”. Liczba była policzona poprawnie, a jej znaczenie fałszywe —
+     * i to jest gorsze niż brak liczby, bo w liczbę się wierzy.
+     *
+     * Zadanie ma własny zegar. Tempo zadania to jego paczki przez jego czas,
+     * więc opóźniony start, przerwa na rozmowę z kierownikiem i przejście
+     * z procesu o normie 30/h do procesu o normie 100/h przestają się mieszać
+     * w jedną nieczytelną średnią.
+     *
+     * =====================================================================
+     * WZNOWIENIE ZAMIAST DRUGIEGO ZADANIA O TEJ SAMEJ NAZWIE
+     * =====================================================================
+     * Zadanie ma LISTĘ ODCINKÓW, a nie jeden początek i koniec. Kto pracował
+     * trzy godziny w procesie zwykłym, poszedł na pięć godzin do szybkiego
+     * i wrócił do zwykłego, WZNAWIA to pierwsze zadanie — z tym samym
+     * identyfikatorem. Dzięki temu w podsumowaniu zmiany stoi jedno zadanie
+     * z sensownym tempem, a nie trzy wpisy 30 / 100 / 30, z których nic nie
+     * widać. Odcinek jest też miejscem na pauzę: zamknięty odcinek zatrzymuje
+     * zegar, a pierwsza paczka po pauzie otwiera nowy — bo skoro paczki idą,
+     * to przerwa się skończyła, niezależnie od tego, czy ktoś o tym pamiętał.
+     *
+     * =====================================================================
+     * RĘCZNIE WPISANE PACZKI NIE WCHODZĄ DO MIANOWNIKA PROCENTU
+     * =====================================================================
+     * Po awarii maszyny (a komputer stoi na sesji tymczasowej, więc pamięć
+     * przeglądarki znika w całości) człowiek pamięta swoje tempo albo liczbę
+     * paczek, ale nie pamięta, ile z nich poszło na sprzedaż. Wpisana liczba
+     * trafia więc do paczek ORAZ do licznika „poza mianownikiem” — tego samego,
+     * którym od 1.3.0 liczą się audyty. Skutek: procent sprzedaży pokazuje
+     * wyłącznie to, co skrypt naprawdę zobaczył, czyli liczy się od przedmiotu,
+     * przy którym człowiek wrócił do pracy. Gdyby wpisane paczki wchodziły do
+     * mianownika, procent po każdej awarii spadałby do kilku procent i nie
+     * znaczyłby już nic.
+     *
+     * =====================================================================
+     * NIENARUSZALNA RÓWNOŚĆ
+     * =====================================================================
+     * Suma paczek wszystkich zadań danej karty ZAWSZE równa się licznikowi tej
+     * karty. Liczniki zmiany zostają jedynym źródłem prawdy dla linii 1, 2 i 7,
+     * a zadania są ich rozbiciem w czasie. Obie strony ruszają się w jednym
+     * miejscu — w metodach niżej — i pilnuje tego osobne sprawdzenie w testach.
+     *
+     * =====================================================================
+     * ZAPIS
+     * =====================================================================
+     *   `tasks`                      — wspólny dla wszystkich kart: lista zadań
+     *                                  i identyfikator aktywnego. Zadanie jest
+     *                                  własnością CZŁOWIEKA, nie karty: kto
+     *                                  przechodzi do innego procesu, przechodzi
+     *                                  w nim z wszystkimi otwartymi kartami.
+     *   `taskcnt_<id>_<karta>`       — liczniki, OSOBNY KLUCZ NA KARTĘ. Tak samo
+     *                                  jak liczniki zmiany i z tego samego
+     *                                  powodu: dwie karty piszące jeden klucz
+     *                                  zamazywałyby sobie liczby nawzajem.
+     */
+    const TaskManager = {
+        // ---------------- dostęp ----------------
+        list() { return store.tasks; },
+        byId(id) { return store.tasks.find(t => t.id === id) || null; },
+        /** Aktywne zadanie albo null, gdy trwa pauza. */
+        active() { return this.byId(store.activeTaskId); },
+        /** Czy zegar zadania chodzi (ostatni odcinek jest otwarty). */
+        isRunning(task) {
+            const last = task && task.segments[task.segments.length - 1];
+            return !!(last && last.to === null);
+        },
+
+        /**
+         * Zadanie domyślne powstaje przy pierwszym uruchomieniu i zaczyna się
+         * razem ze zmianą — bo dopóki człowiek nie powie inaczej, cała zmiana
+         * jest jednym procesem. To zachowanie sprzed 1.3.0 i po włączeniu
+         * skryptu nic się nie zmienia: jedno zadanie, tempo liczone od początku
+         * zmiany.
+         */
+        init() {
+            if (store.tasks.length) return this.active();
+            return this.create(CONFIG.DEFAULT_TASK_NAME,
+                               store.sessionConfig.shiftCalculatedStartTime || Date.now());
+        },
+
+        // ---------------- zmiany listy ----------------
+        /**
+         * Zadania siedzą w zwykłej tablicy, a tablice NIE są reaktywne (patrz
+         * createReactive: Utils.isObject odrzuca tablice). Dlatego każda zmiana
+         * podmienia całą tablicę — inaczej linia 8 i panel nie dowiedziałyby się
+         * o niczym, dopóki czegoś innego nie ruszy magistrali.
+         */
+        _commit(list) {
+            store.tasks = list.slice();
+            this.save();
+        },
+
+        /** Nazwa bez białych brzegów, przycięta do granicy z konfiguracji. */
+        cleanName(raw, fallback) {
+            const name = String(raw == null ? '' : raw).trim().slice(0, CONFIG.TASK_MAX_NAME_LEN);
+            return name || fallback || CONFIG.DEFAULT_TASK_NAME;
+        },
+
+        /**
+         * Początek odcinka: nie w przyszłości i nie wcześniej niż początek
+         * odcinka, który właśnie zamykamy.
+         *
+         * Drugie ograniczenie nie jest ozdobne: bez niego przestawienie startu
+         * „o dwie minuty wstecz” tuż po przełączeniu dałoby poprzedniemu
+         * zadaniu odcinek o ujemnej długości, a więc tempo z dzieleniem przez
+         * liczbę ujemną.
+         */
+        clampStart(ms) {
+            const now = Date.now();
+            const wanted = Number(ms);
+            let value = isFinite(wanted) ? wanted : now;
+            const current = this.active();
+            if (current) {
+                const last = current.segments[current.segments.length - 1];
+                // Nie wcześniej niż początek ostatniego odcinka i nie wcześniej
+                // niż jego koniec: wznowienie sprzed własnej pauzy dałoby dwa
+                // odcinki nachodzące na siebie, czyli czas policzony dwa razy.
+                value = Math.max(value, last.from, last.to === null ? last.from : last.to);
+            }
+            return Math.min(value, now);
+        },
+
+        /** Zamyka otwarty odcinek aktywnego zadania na podanej chwili. */
+        closeActive(atMs) {
+            const task = this.active();
+            if (!task || !this.isRunning(task)) return;
+            const last = task.segments[task.segments.length - 1];
+            last.to = Math.max(last.from, atMs);
+        },
+
+        /** Nowe zadanie i od razu przejście do niego. */
+        create(name, startMs) {
+            const from = this.clampStart(startMs);
+            this.closeActive(from);
+            const task = {
+                id: Utils.generateId('task_'),
+                name: this.cleanName(name),
+                segments: [{ from, to: null }],
+            };
+            const list = store.tasks.slice();
+            list.push(task);
+            store.activeTaskId = task.id;
+            this._commit(list);
+            Utils.log(`[ZADANIE] nowe: ${task.name}`);
+            return task;
+        },
+
+        /**
+         * Wznowienie zadania, które już było: nowy odcinek na tym samym
+         * identyfikatorze. To jest cała różnica wobec `create` i cały powód,
+         * dla którego zadanie ma listę odcinków.
+         */
+        resume(id, startMs) {
+            const task = this.byId(id);
+            if (!task) return null;
+            if (task.id === store.activeTaskId && this.isRunning(task)) return task;
+            const from = this.clampStart(startMs);
+            this.closeActive(from);
+            task.segments.push({ from, to: null });
+            store.activeTaskId = task.id;
+            this._commit(store.tasks);
+            Utils.log(`[ZADANIE] wznowione: ${task.name}`);
+            return task;
+        },
+
+        /** Pauza: zegar staje, ale zadanie zostaje aktywne. */
+        pause(atMs) {
+            const task = this.active();
+            if (!task || !this.isRunning(task)) return;
+            this.closeActive(Math.min(Number(atMs) || Date.now(), Date.now()));
+            this._commit(store.tasks);
+            Utils.log(`[ZADANIE] pauza: ${task.name}`);
+        },
+
+        /**
+         * Paczka w trakcie pauzy znaczy, że pauza się skończyła. Zegar rusza od
+         * TEJ paczki, a nie wstecz — czas, którego nie było, nie wraca.
+         */
+        ensureRunning() {
+            let task = this.active();
+            if (!task) task = this.init() || this.active();
+            if (!task) return null;
+            if (!this.isRunning(task)) {
+                task.segments.push({ from: Date.now(), to: null });
+                this._commit(store.tasks);
+                Utils.log(`[ZADANIE] pauza przerwana paczką: ${task.name}`);
+            }
+            return task;
+        },
+
+        rename(id, name) {
+            const task = this.byId(id);
+            if (!task) return;
+            task.name = this.cleanName(name, task.name);
+            this._commit(store.tasks);
+        },
+
+        /**
+         * POCZĄTEK CAŁEGO ZADANIA — „zacząłem dwie minuty temu”, „zacząłem razem
+         * ze zmianą”.
+         *
+         * ===================================================================
+         * DLACZEGO CAŁEGO, A NIE OSTATNIEGO ODCINKA (poprawka z 1.3.2)
+         * ===================================================================
+         * Pierwsza wersja przestawiała początek OSTATNIEGO odcinka, a czas
+         * zadania jest sumą WSZYSTKICH. Wystarczyło raz zatrzymać zegar
+         * i kliknąć „początek zmiany”, żeby ostatni odcinek rozciągnął się na
+         * całą zmianę OBOK odcinków wcześniejszych. Każde powtórzenie dokładało
+         * kolejne pięć godzin: po niespełna pięciu godzinach pracy dało się
+         * naklikać czternaście.
+         *
+         * Człowiek ma w głowie jedno zdanie — „to zadanie zaczęło się o X” —
+         * więc kontrolka musi robić dokładnie to:
+         *
+         *   - przesunięcie WSTECZ rozciąga pierwszy odcinek do nowego początku;
+         *   - przesunięcie W PRZÓD obcina wszystko, co leży przed nim: odcinki
+         *     zamknięte wcześniej znikają, a odcinek, w środku którego wypada
+         *     nowy początek, zaczyna się od niego.
+         *
+         * Przerwy zostają nietknięte, a przepracowany czas NIGDY nie przekracza
+         * odstępu od początku zadania do teraz. To jest niezmiennik, który
+         * pilnuje testów — gdyby istniał od początku, tamten błąd nie wyszedłby
+         * dopiero na hali.
+         */
+        setStart(id, ms) {
+            const task = this.byId(id);
+            if (!task) return;
+            const wanted = Math.min(Math.max(0, Number(ms) || 0), Date.now());
+            const first = task.segments[0];
+            if (wanted <= first.from) {
+                first.from = wanted;
+            } else {
+                const kept = task.segments
+                    .filter(seg => seg.to === null || seg.to > wanted)
+                    .map(seg => ({ from: Math.max(seg.from, wanted), to: seg.to }));
+                task.segments = kept.length ? kept : [{ from: wanted, to: null }];
+            }
+            this._commit(store.tasks);
+        },
+
+        remove(id) {
+            const task = this.byId(id);
+            if (!task || store.tasks.length <= 1) return false;
+            const list = store.tasks.filter(t => t.id !== id);
+            // Liczniki znikają razem z zadaniem, inaczej suma zadań przestałaby
+            // zgadzać się z licznikiem zmiany. Licznik zmiany schodzi o tyle samo.
+            const counters = store.taskCounters[id] || {};
+            for (const [tabKey, c] of Object.entries(counters)) {
+                store.tabCounters[tabKey] = Math.max(0, (store.tabCounters[tabKey] || 0) - (c.done || 0));
+                store.tabSold[tabKey] = Math.max(0, (store.tabSold[tabKey] || 0) - (c.sold || 0));
+                store.tabNeutral[tabKey] = Math.max(0, (store.tabNeutral[tabKey] || 0) - (c.neutral || 0));
+                StorageManager.saveCounter(tabKey, store.tabCounters[tabKey]);
+                StorageManager.saveSold(tabKey, store.tabSold[tabKey]);
+                StorageManager.saveNeutral(tabKey, store.tabNeutral[tabKey]);
+                StorageManager.removeTaskCounter(id, tabKey);
+            }
+            delete store.taskCounters[id];
+            if (store.activeTaskId === id) store.activeTaskId = list[list.length - 1].id;
+            this._commit(list);
+            return true;
+        },
+
+        // ---------------- czas ----------------
+        /**
+         * Przepracowany czas zadania: suma odcinków minus obiad, który się z nimi
+         * pokrywa.
+         *
+         * Obiad odejmuje się tym samym rachunkiem, co w linii 1 — inaczej
+         * człowiek, który nie pamiętał o postawieniu pauzy na przerwę, miałby
+         * w zadaniu pół godziny pracy, której nie było.
+         */
+        workedMs(task, nowMs) {
+            if (!task) return 0;
+            const now = Number(nowMs) || Date.now();
+            let total = 0;
+            for (const seg of task.segments) {
+                const to = seg.to === null ? now : seg.to;
+                if (to <= seg.from) continue;
+                total += (to - seg.from) - ShiftManager.lunchOverlapMs(seg.from, to);
+            }
+            return Math.max(0, total);
+        },
+
+        /** Początek pierwszego odcinka i koniec ostatniego — do podsumowania. */
+        span(task) {
+            if (!task || !task.segments.length) return { from: null, to: null };
+            const first = task.segments[0];
+            const last = task.segments[task.segments.length - 1];
+            return { from: first.from, to: last.to };
+        },
+
+        // ---------------- liczniki ----------------
+        /** Liczniki zadania na danej karcie; zawsze zwraca komplet pól. */
+        counters(id, tabKey) {
+            const byTab = store.taskCounters[id] || {};
+            const c = byTab[tabKey] || {};
+            return { done: c.done || 0, sold: c.sold || 0, neutral: c.neutral || 0 };
+        },
+
+        /** Suma liczników zadania po wszystkich kartach. */
+        totals(task) {
+            const out = { done: 0, sold: 0, neutral: 0 };
+            const byTab = (task && store.taskCounters[task.id]) || {};
+            for (const c of Object.values(byTab)) {
+                out.done += c.done || 0;
+                out.sold += c.sold || 0;
+                out.neutral += c.neutral || 0;
+            }
+            return out;
+        },
+
+        /** Zapis liczników zadania dla jednej karty. Jedyne miejsce, które je rusza. */
+        _write(id, tabKey, next) {
+            const byTab = { ...(store.taskCounters[id] || {}) };
+            byTab[tabKey] = {
+                done: Math.max(0, next.done | 0),
+                sold: Math.max(0, next.sold | 0),
+                neutral: Math.max(0, next.neutral | 0),
+            };
+            store.taskCounters = { ...store.taskCounters, [id]: byTab };
+            StorageManager.saveTaskCounter(id, tabKey, byTab[tabKey]);
+        },
+
+        /**
+         * Przedmiot zaliczony automatycznie: paczka zadania rośnie, kierunek
+         * dopisze się osobno (Routing woła `addSold` albo `addNeutral`, gdy go
+         * pozna — może to być dopiero za kilka skanów).
+         */
+        addItem(tabKey) {
+            const task = this.ensureRunning();
+            if (!task) return;
+            const c = this.counters(task.id, tabKey);
+            this._write(task.id, tabKey, { ...c, done: c.done + 1 });
+        },
+
+        addSold(tabKey) {
+            const task = this.active();
+            if (!task) return;
+            const c = this.counters(task.id, tabKey);
+            this._write(task.id, tabKey, { ...c, sold: c.sold + 1 });
+        },
+
+        addNeutral(tabKey) {
+            const task = this.active();
+            if (!task) return;
+            const c = this.counters(task.id, tabKey);
+            this._write(task.id, tabKey, { ...c, neutral: c.neutral + 1 });
+        },
+
+        /**
+         * RĘCZNA POPRAWKA LICZNIKA — skrót klawiszowy, przycisk, pole w panelu.
+         *
+         * Idzie do paczek I do licznika „poza mianownikiem”, bo kierunku takiego
+         * przedmiotu nikt nie zna: poprawia się zwykle to, czego program nie
+         * zobaczył. Dzięki temu ręczna poprawka nie rozcieńcza procentu
+         * sprzedaży — ani w dół (gdyby liczyła się jak niesprzedaż), ani w górę.
+         */
+        adjustManual(tabKey, delta) {
+            // Przez ensureRunning, a nie przez active(): ręczna paczka też jest
+            // paczką, więc kończy pauzę tak samo, jak zaliczona automatycznie.
+            const task = this.ensureRunning();
+            if (!task) return;
+            const c = this.counters(task.id, tabKey);
+            const done = Math.max(0, c.done + delta);
+            const used = done - c.done;          // ile naprawdę weszło po przycięciu do zera
+            this._write(task.id, tabKey, {
+                done,
+                sold: Math.min(c.sold, done),
+                neutral: Math.max(0, Math.min(done, c.neutral + used)),
+            });
+        },
+
+        /**
+         * Wpisanie licznika karty wprost („zrobiłem dziś 180”) — tak wraca się
+         * do pracy po awarii maszyny.
+         *
+         * Różnicę bierze na siebie aktywne zadanie. Gdy liczba jest MNIEJSZA niż
+         * to, co zadania mają razem, nadmiar zdejmuje się od najnowszego wstecz:
+         * inaczej suma zadań rozjechałaby się z licznikiem karty, a to jedyna
+         * równość, na której stoi całe rozliczenie.
+         */
+        applyManualTotal(tabKey, target) {
+            const wanted = Math.max(0, Number(target) || 0);
+            let diff = wanted - this.shiftTotal(tabKey, 'done');
+            if (!diff) return;
+            if (diff > 0) {
+                this.adjustManual(tabKey, diff);
+                return;
+            }
+            for (let i = store.tasks.length - 1; i >= 0 && diff < 0; i--) {
+                const task = store.tasks[i];
+                const c = this.counters(task.id, tabKey);
+                if (!c.done) continue;
+                const take = Math.min(c.done, -diff);
+                const done = c.done - take;
+                this._write(task.id, tabKey, {
+                    done,
+                    sold: Math.min(c.sold, done),
+                    neutral: Math.min(c.neutral, done),
+                });
+                diff += take;
+            }
+        },
+
+        /** Suma pola po wszystkich zadaniach dla jednej karty. */
+        shiftTotal(tabKey, field) {
+            let sum = 0;
+            for (const task of store.tasks) sum += this.counters(task.id, tabKey)[field] || 0;
+            return sum;
+        },
+
+        // ---------------- liczby dla człowieka ----------------
+        /** Paczki na godzinę. Poniżej granicy z konfiguracji tempo nie istnieje. */
+        rate(task, nowMs) {
+            const worked = this.workedMs(task, nowMs);
+            if (worked < CONFIG.RATE_MIN_WORKED_MS) return 0;
+            return this.totals(task).done / (worked / 3600000);
+        },
+
+        /** Procent sprzedaży zadania: paczki bez tych, których kierunku nie da się znać. */
+        percent(task) {
+            const t = this.totals(task);
+            return Utils.percentFloor(t.sold, t.done - t.neutral);
+        },
+
+        /**
+         * Ile paczek odpowiada zadanemu tempu — dwukierunkowe pole w panelu.
+         *
+         * Zwraca liczbę CAŁKOWITĄ, bo paczek połówkowych nie ma. Panel po
+         * wpisaniu tempa pokazuje tempo przeliczone z tej liczby z powrotem
+         * (`rate`), więc człowiek widzi wartość OSIĄGALNĄ, a nie tę, którą
+         * wpisał: przy 1:17 pracy tempo 118 daje 151 paczek, czyli naprawdę
+         * 117,7 na godzinę.
+         */
+        doneForRate(task, rate, nowMs) {
+            const worked = this.workedMs(task, nowMs);
+            const wanted = Number(rate);
+            // Ta sama granica, co w `rate`: przeliczanie tempa na paczki przy
+            // trzech sekundach pracy dałoby liczbę wziętą z niczego, a wpisuje
+            // się ona do liczników na stałe.
+            if (!isFinite(wanted) || wanted < 0 || worked < CONFIG.RATE_MIN_WORKED_MS) return null;
+            return Math.max(0, Math.round(wanted * worked / 3600000));
+        },
+
+        /**
+         * Wpisanie liczby paczek WPROST dla jednego zadania.
+         *
+         * Liczby zadania sumują się po wszystkich kartach, więc różnica idzie do
+         * tej karty, przy której człowiek siedzi. Paczki dopisane tą drogą są
+         * jak każde inne wpisane ręcznie: poza mianownikiem procentu.
+         */
+        applyTaskTotal(task, tabKey, target) {
+            if (!task) return;
+            const wanted = Math.max(0, Number(target) || 0);
+            const delta = wanted - this.totals(task).done;
+            if (!delta) return;
+            const c = this.counters(task.id, tabKey);
+            const done = Math.max(0, c.done + delta);
+            const used = done - c.done;
+            this._write(task.id, tabKey, {
+                done,
+                sold: Math.min(c.sold, done),
+                neutral: Math.max(0, Math.min(done, c.neutral + used)),
+            });
+        },
+
+        /**
+         * Godzina wpisana ręcznie („18:32”) na znacznik czasu.
+         *
+         * Godzina PÓŹNIEJSZA NIŻ TERAZ to wczoraj, a nie pomyłka: na nocnej
+         * zmianie o 00:40 wpisane „23:30” znaczy pół godziny temu. Bez tego
+         * clampStart przyciąłby wartość do „teraz” i człowiek dostałby zadanie
+         * o zerowej długości zamiast komunikatu, że czegoś nie rozumiemy.
+         *
+         * @returns {number|null} null, gdy tekst nie jest godziną.
+         */
+        parseClock(text) {
+            const m = /^\s*(\d{1,2})\s*[:.]\s*(\d{2})\s*$/.exec(String(text == null ? '' : text));
+            if (!m) return null;
+            const hours = parseInt(m[1], 10);
+            const minutes = parseInt(m[2], 10);
+            if (hours > 23 || minutes > 59) return null;
+            const d = new Date();
+            d.setHours(hours, minutes, 0, 0);
+            let ms = d.getTime();
+            if (ms > Date.now()) ms -= 24 * 3600000;
+            return ms;
+        },
+
+        /**
+         * „Chcę mieć mniej więcej takie tempo” — wpisane tempo zamienia się na
+         * paczki, a różnica idzie do bieżącej karty.
+         *
+         * Liczby zadania sumują się po WSZYSTKICH kartach, więc cel liczy się
+         * z sumy, a dopisuje do tej karty, przy której człowiek siedzi. Paczki
+         * dopisane tą drogą są jak każde inne wpisane ręcznie: idą poza
+         * mianownik procentu, bo ich kierunku nikt nie zna.
+         *
+         * @returns {number|null} liczba paczek zadania po zmianie albo null,
+         *   gdy tempa nie da się przeliczyć (za krótki czas pracy, zły tekst).
+         */
+        setRate(task, rate, tabKey, nowMs) {
+            if (!task) return null;
+            const target = this.doneForRate(task, rate, nowMs);
+            if (target === null) return null;
+            const current = this.totals(task).done;
+            const c = this.counters(task.id, tabKey);
+            const delta = target - current;
+            const done = Math.max(0, c.done + delta);
+            const used = done - c.done;
+            this._write(task.id, tabKey, {
+                done,
+                sold: Math.min(c.sold, done),
+                neutral: Math.max(0, Math.min(done, c.neutral + used)),
+            });
+            return this.totals(task).done;
+        },
+
+        // ---------------- zapis ----------------
+        save() {
+            StorageManager.saveTasks();
+        },
+
+        /** Sprawozdanie do konsoli: SH.tasks() */
+        info() {
+            const now = Date.now();
+            return store.tasks.map(t => {
+                const tot = this.totals(t);
+                const span = this.span(t);
+                return {
+                    nazwa: t.name + (t.id === store.activeTaskId ? ' (aktywne)' : ''),
+                    paczki: tot.done,
+                    'poza mianownikiem': tot.neutral,
+                    tempo: this.rate(t, now).toFixed(1),
+                    procent: this.percent(t) + '%',
+                    czas: Utils.formatDuration(this.workedMs(t, now)),
+                    odcinki: t.segments.length,
+                    od: span.from ? new Date(span.from).toTimeString().substring(0, 5) : '—',
+                };
+            });
+        },
+    };
+
+    // ─── src/25-presets.js ───
 // ==========================================
     // 9. USTAWIENIA PRACOWNIKA (KONFIGURACJA OSOBISTA)
     // ==========================================
@@ -5787,10 +7867,11 @@ const SCRIPT_LOGS_ENABLED = false;
    Są trzy sposoby i różnią się tym, jak długo zmiana żyje.
 
    1. PANEL USTAWIEŃ (najprostszy, nic nie trzeba edytować).
-      Wpisz na stronie hasło — domyślnie GORDONPAULE — a panel się otworzy.
-      Wszystko, co tam zmienisz, zapisze się w przeglądarce i przeżyje F5.
-      Hasło zmienia się w JEDNEJ linii na samej górze pliku:
-          const SETTINGS_ACCESS_PASSWORD = 'GORDONPAULE';
+      Wpisz na stronie hasło — domyślnie GORDONPAULE albo BOMBA — a panel
+      się otworzy. Wszystko, co tam zmienisz, zapisze się w przeglądarce
+      i przeżyje F5. Hasła zmienia się w JEDNEJ linii na samej górze pliku:
+          const SETTINGS_ACCESS_PASSWORDS = ['GORDONPAULE', 'BOMBA'];
+      Można dopisać kolejne; jedyne ograniczenie opisane jest tam w komentarzu.
 
    2. KONSOLA (na próbę, do najbliższego przeładowania strony).
       Po uruchomieniu skryptu dostępny jest obiekt SH, np.:
