@@ -762,7 +762,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * Bez oznaczeń, bez jednostek, bez nazw działów. Odświeżanie raz na
          * sekundę, tak jak reszta okna.
          */
-        line7_compact: { visible: true, colorHex: '#808080', alpha: 50, fontSize: 13 },
+        line7_compact: { visible: true, colorHex: '#808080', alpha: 60, fontSize: 14 },
         /**
          * LINIA 8 — BIEŻĄCE ZADANIE (1.3.0).
          *
@@ -790,7 +790,7 @@ const SCRIPT_LOGS_ENABLED = false;
          *
          * Ten sam wzorzec, co w karcie ceny — nie trzeba było wymyślać drugiego.
          */
-        statsWindowPosition: { top: '', left: '20px', bottom: '8px' },
+        statsWindowPosition: { top: '', left: '20px', bottom: '0px' },
         statsWindowBgColorHex: '#ffffff',
         statsWindowBgAlpha: 0,
         priceCard: {
