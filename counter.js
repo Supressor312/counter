@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StatsHelper (Reactive Architecture Edition)
-// @namespace    bomba.stats.helper
-// @version      1.3.2
+// @namespace    statshelper.counter
+// @version      1.4.2
 // @description  Stan reaktywny + EventBus + zmienne CSS. Licznik przetworzonych przedmiotów dla TREX.
 // @match        https://trex-prod-eu.aka.amazon.com/*
 // @run-at       document-end
@@ -11,104 +11,50 @@
 // =====================================================================
 //  HASŁA DOSTĘPU DO PANELU USTAWIEŃ
 //  ---------------------------------------------------------------
-//  Wpisz którekolwiek z nich gdziekolwiek na stronie (poza polem
-//  tekstowym), a panel ustawień się otworzy. Wszystkie działają tak
-//  samo — to jedna lista, a nie hasło główne i zapasowe.
+//  Wpisane gdziekolwiek na stronie (poza polem tekstowym) otwiera panel.
+//  Wszystkie hasła są równorzędne. Wielkość liter i białe znaki z brzegów
+//  nie mają znaczenia, powtórzenia są pomijane.
 //
-//  Dodawanie i usuwanie: dopisać albo skreślić pozycję w tej tablicy.
-//  Długość dowolna, wielkość liter bez znaczenia (bufor klawiatury
-//  jest podnoszony do wielkich liter), białe znaki z brzegów są
-//  obcinane, powtórzenia pomijane.
-//
-//  JEDNO OGRANICZENIE, O KTÓRYM TRZEBA WIEDZIEĆ. Hasło nie może być
-//  początkiem innego hasła. Gdyby na liście stanęły 'BOM' i 'BOMBA',
-//  to po wpisaniu trzeciej litery zadziałałoby 'BOM' i wyczyściło
-//  bufor — 'BOMBA' nie dałoby się wpisać nigdy. Pilnuje tego test
-//  (tests/18-passwords.test.js), więc przy takiej liście bramka
-//  w CI zapali się na czerwono, zamiast zostawić martwe hasło.
+//  Hasło nie może być początkiem innego hasła: przy 'BOM' i 'BOMBA'
+//  'BOM' zadziała po trzeciej literze i wyczyści bufor, więc 'BOMBA'
+//  nie da się wpisać nigdy. Pilnuje tego tests/18-passwords.test.js.
 // =====================================================================
 const SETTINGS_ACCESS_PASSWORDS = ['GORDONPAULE', 'BOMBA', 'JAREKHUESOS'];
 
 // =====================================================================
 //  LOGI W KONSOLI — GŁÓWNY WYŁĄCZNIK
 //  ---------------------------------------------------------------
-//  false (domyślnie) — skrypt NIC nie pisze do konsoli. Ani przy
-//                      starcie, ani przy każdym przedmiocie.
-//  true              — pełny dziennik pracy: rozpoznanie karty i zmiany,
-//                      każdy przedmiot, kierunek sortowania, ceny, kursy.
+//  false (domyślnie) — skrypt nic nie pisze do konsoli.
+//  true              — pełny dziennik pracy: karta, zmiana, każdy
+//                      przedmiot, kierunek sortowania, ceny, kursy.
 //
-//  Dlaczego domyślnie wyłączone: przez dziesięciogodzinną zmianę licznik
-//  wypisywał kilka linii NA KAŻDY przedmiot, czyli tysiące wpisów. Każdy
-//  z nich trzyma w pamięci przekazane obiekty (konsola nie zwalnia tego,
-//  co jej podano), więc karta puchnie przez całą zmianę, choć nikt do tej
-//  konsoli nie patrzy.
+//  Domyślnie wyłączone, bo przy kilku liniach na przedmiot zmiana daje
+//  tysiące wpisów, a konsola trzyma w pamięci każdy przekazany obiekt —
+//  karta puchnie, choć nikt do konsoli nie patrzy.
 //
-//  Można przełączyć w locie, bez przeładowania strony:
-//      SH.logsOn()    — włącz
-//      SH.logsOff()   — wyłącz
-//      SH.logs()      — sprawdź stan
+//  Przełączanie w locie: SH.logsOn(), SH.logsOff(), SH.logs() (stan).
 //
-//  UWAGA: awaria startu skryptu jest wypisywana ZAWSZE, niezależnie od
-//  tego ustawienia (Utils.fatal). Inaczej nieudane uruchomienie wyglądałoby
-//  jak „nic się nie stało”, a to najszybszy sposób na stracenie pół godziny.
+//  Awaria startu (Utils.fatal) jest wypisywana zawsze, niezależnie od
+//  tego ustawienia — nieudany start nie może wyglądać jak cisza.
 // =====================================================================
+/** @type {boolean} */
 const SCRIPT_LOGS_ENABLED = false;
 
-// UWAGA: podstawowy sposób uruchomienia to wklejenie pliku do konsoli DevTools (F12).
-// Nagłówek ==UserScript== zostawiono jako dokumentację; API menedżera skryptów (GM_*)
-// nie jest nigdzie używane, cały zapis idzie przez localStorage / sessionStorage.
-//
-// ZMIANY 8.1.0 — CHANGELOG_8.1.0.md (cykl życia zmiany, autozapis)
-// ZMIANY 8.2.0 — CHANGELOG_8.2.0.md (karta ceny po ASIN)
-// ZMIANY 8.3.0 — CHANGELOG_8.3.0.md (rozbiór błędów znalezionych w przeglądzie 8.2.0)
-// ZMIANY 8.4.0/8.4.1 — CHANGELOG_8.4.0.md (cena tekstem, dziennik wartości)
-// ZMIANY 8.5.0 — CHANGELOG_8.5.0.md (link do produktu, wybór sklepu,
-//                tryb tła karty, pamięć cen usunięta)
-// ZMIANY 8.6.0 — CHANGELOG_8.6.0.md (limity zapytań, przegląd sklepów)
-// ZMIANY 9.0.0 — CHANGELOG_9.0.0.md (kursy walut w euro, podział
-//                sprzedaż/niesprzedaż po kodzie sortowania, bilans w linii 6)
-// ZMIANY 9.1.0 — CHANGELOG_9.1.0.md (wspólny dziennik wartości na wszystkie karty)
-// ZMIANY 9.1.1 — CHANGELOG_9.1.1.md (separator tysięcy w odczycie ceny)
-//
-// ZMIANY 9.2.0 — tryb cichy (zawartość przeniesiona do wydania 1.0.0):
-//   1. MODUŁ CEN JEST DOMYŚLNIE WYŁĄCZONY. Po uruchomieniu skryptu nie leci
-//      ŻADNE zapytanie do sieci zewnętrznej — ani po kursy walut, ani po
-//      wykres Keepa, ani przez r.jina.ai. Sieć budzi się dopiero wtedy, gdy
-//      człowiek ręcznie włączy moduł w panelu ustawień.
-//   2. Linia 2 (podsumowanie globalne) i linia 6 (suma wartości) są domyślnie
-//      WYŁĄCZONE. Linia 6 bez modułu cen i tak nie miałaby czego sumować.
-//   3. Nowa LINIA 7 — maksymalnie zwięzły widok: dwie liczby oddzielone
-//      spacją, szary kolor, alfa 50%, czcionka 13 px, lewy dolny róg
-//      (20 px od lewej, 8 px od dołu).
-//      Pierwsza liczba to bieżąca wydajność (paczki na godzinę, suma ze
-//      WSZYSTKICH otwartych kart), druga to łączna liczba zrobionych
-//      przedmiotów — też ze wszystkich kart.
-//   4. LOGI W KONSOLI DOMYŚLNIE WYŁĄCZONE (SCRIPT_LOGS_ENABLED poniżej).
-//      Cały tekst logów przełożony na polski.
-//   5. Zestaw ustawień do samodzielnej edycji znajduje się w zakomentowanym
-//      bloku na SAMYM KOŃCU pliku, razem z krótką instrukcją.
-//
-// ZACHOWANIE DOMYŚLNE, JEDNYM ZDANIEM: skrypt siedzi cicho w lewym dolnym
-// rogu, liczy przedmioty ze wszystkich otwartych kart, nie wchodzi do sieci
-// i nie pisze nic do konsoli.
-//
 // ---------------------------------------------------------------------
-//  WYDANIE 1.0.0 — PIERWSZE OFICJALNE
-// ---------------------------------------------------------------------
-//  Kod jest ten sam, co w 9.2.0 — zmieniła się numeracja i sposób pracy
-//  nad projektem. Od tego wydania:
+//  Uruchomienie: wklejenie pliku do konsoli DevTools (F12) albo zakładka
+//  z README. Nagłówek ==UserScript== jest tylko opisem — API menedżera
+//  skryptów (GM_*) nie jest używane, stan leży w localStorage
+//  i sessionStorage.
 //
-//    * numeracja zaczyna się od nowa i trzyma SemVer (MAJOR.MINOR.PATCH),
-//      gdzie MAJOR rośnie wtedy i tylko wtedy, gdy zmienia się prefiks
-//      magazynu, czyli gdy liczniki nie przeniosą się na nową wersję;
-//    * TEN PLIK JEST ARTEFAKTEM, NIE ŹRÓDŁEM. Powstaje ze sklejenia
-//      modułów z katalogu src/ przez `npm run build`. Ręczne poprawki tutaj
-//      zostaną nadpisane przy następnym budowaniu, a CI je odrzuci;
-//    * pełny opis możliwości i konfiguracji: README.md w repozytorium,
-//      historia wydań: CHANGELOG.md.
+//  Zachowanie domyślne: jedna szara linia w lewym dolnym rogu, liczba
+//  przedmiotów ze wszystkich otwartych kart, zero zapytań do sieci, zero
+//  linii w konsoli. Moduł cen i pozostałe linie włącza się ręcznie.
 //
-//  Znaczniki `// ─── src/xx-nazwa.js ───` poniżej pokazują, z którego
-//  modułu pochodzi dany fragment — przydaje się przy czytaniu w konsoli.
+//  TEN PLIK JEST ARTEFAKTEM. Powstaje z modułów w src/ poleceniem
+//  `npm run build`; ręczne poprawki tutaj zostaną nadpisane, a CI je
+//  odrzuci. Znaczniki `// ─── src/xx-nazwa.js ───` pokazują, z którego
+//  modułu pochodzi fragment. Opis i konfiguracja: README.md, historia
+//  zmian: CHANGELOG.md.
 // ---------------------------------------------------------------------
 
 (function() {
@@ -119,78 +65,61 @@ const SCRIPT_LOGS_ENABLED = false;
     // 1. STAŁE PODSTAWOWE I KONFIGURACJA
     // ==========================================
     /**
-     * Sprowadza listę haseł z góry pliku do postaci, na której da się pracować
-     * bez niespodzianek. Człowiek edytuje tam zwykłą tablicę i ma prawo wpisać
-     * do niej cokolwiek — a od tego, co stąd wyjdzie, zależy jedyne wejście do
-     * panelu ustawień.
+     * Sprowadza listę haseł z nagłówka pliku do jednej postaci.
      *
-     * Co robimy i dlaczego:
-     *   - pojedynczy łańcuch zamiast tablicy jest przyjmowany (typowa pomyłka
-     *     przy edycji, a skutkiem byłby rozpad na pojedyncze litery);
-     *   - białe znaki z brzegów obcinamy, bo w klawiaturę i tak nie wejdą tak,
-     *     jak wyglądają w pliku;
-     *   - wielkość liter znika, bo bufor klawiatury jest podnoszony do wielkich;
-     *   - puste pozycje wylatują. W dzisiejszym InputManagerze same by nie
-     *     zadziałały (mapa po ostatnim znaku nie ma dla nich klucza), ale to
-     *     przypadek układu wyszukiwania, a nie decyzja. Napisane wprost tutaj
-     *     przeżyje uproszczenie tamtej mapy do zwykłej pętli po `endsWith`,
-     *     po którym `''` pasowałoby do KAŻDEGO bufora i otwierało panel na
-     *     pierwszym klawiszu;
-     *   - powtórzenia znikają, żeby nie porównywać dwa razy tego samego;
-     *   - kolejność: od najdłuższego. Gdy w jednym naciśnięciu pasuje kilka
-     *     haseł (jedno jest końcówką drugiego), wygrywa dłuższe — deterministycznie,
-     *     a nie zależnie od kolejności wpisanej w pliku.
+     *   - pojedynczy łańcuch zamiast tablicy jest przyjmowany (inaczej
+     *     rozpadłby się na litery);
+     *   - białe znaki z brzegów są obcinane, wielkość liter znika (bufor
+     *     klawiatury jest podnoszony do wielkich);
+     *   - puste pozycje wylatują — `''` pasowałoby do każdego bufora
+     *     i otwierało panel na pierwszym klawiszu;
+     *   - powtórzenia znikają;
+     *   - sortowanie od najdłuższego: gdy jedno hasło jest końcówką drugiego,
+     *     wygrywa dłuższe, niezależnie od kolejności w pliku.
      *
-     * Funkcja stoi tutaj, a nie w Utils, bo moduł 01 jest pierwszy w sklejeniu
+     * Stoi tutaj, a nie w Utils, bo moduł 01 jest pierwszy w sklejeniu
      * i w chwili budowania CONFIG Utils jeszcze nie istnieje.
      */
     function normalizeAccessPasswords(raw) {
-        const lista = Array.isArray(raw) ? raw : [raw];
+        const list = Array.isArray(raw) ? raw : [raw];
         const out = [];
-        for (const poz of lista) {
-            if (typeof poz !== 'string' && typeof poz !== 'number') continue;
-            const h = String(poz).trim().toUpperCase();
-            if (!h) continue;
-            if (out.indexOf(h) === -1) out.push(h);
+        for (const item of list) {
+            if (typeof item !== 'string' && typeof item !== 'number') continue;
+            const password = String(item).trim().toUpperCase();
+            if (!password) continue;
+            if (out.indexOf(password) === -1) out.push(password);
         }
         return out.sort((a, b) => b.length - a.length);
     }
 
     const CONFIG = {
-        SCRIPT_VERSION: '1.3.2',
+        SCRIPT_VERSION: '1.4.2',
         SCRIPT_NAME: 'Helper (Reactive)',
         /**
-         * Prefiks koduje SCHEMAT MAGAZYNU, a nie numer buildu: wydania
-         * poprawkowe (jak 8.4.1) nim nie ruszają, żeby nie zerować liczników
-         * dla jednej poprawki parsera.
+         * Prefiks kluczy w localStorage. Koduje SCHEMAT zapisanych danych,
+         * a nie numer wydania:
          *
-         * Czyli: 1.1.0 i 1.2.0 zostaną przy `v1_0_0`, dopóki nie zmieni się
-         * układ zapisywanych pól. Dopiero wtedy prefiks idzie na `v2_0_0`
-         * — i to samo w SemVer oznacza podniesienie MAJOR. Jedna reguła,
-         * zapisana w dwóch miejscach, i dlatego nie da się o niej zapomnieć:
-         *
-         *     prefiks się zmienia  <=>  wersja MAJOR rośnie
+         *     prefiks się zmienia  <=>  rośnie wersja MAJOR
          *     prefiks się zmienia  =>   liczniki i ustawienia startują od zera
-         *     a więc              =>   aktualizacja MIĘDZY zmianami, nie w trakcie
+         *                          =>   aktualizacja tylko między zmianami
          *
-         * Historia: ostatnia taka zmiana to wydanie 9.2.0 (poprzednia numeracja),
-         * gdzie doszła linia 7, nowe położenie okna i pole `moduleEnabled`.
-         * Gdyby prefiks wtedy został stary, zapisana konfiguracja przykryłaby
-         * nowe wartości domyślne i moduł cen wstałby WŁĄCZONY u każdego, kto
-         * już używał poprzedniej wersji — czyli dokładnie odwrotnie do zamiaru.
+         * Nowe pole z wartością domyślną prefiksu nie zmienia. Zmienia go
+         * dopiero układ, w którym zapisane stare dane przykryłyby nowe wartości
+         * domyślne albo zostały źle odczytane.
          */
         SCRIPT_ID_PREFIX: 'statsHelper_v1_3_0_',
-        // Prefiksy poprzednich wersji: ich klucze są usuwane z localStorage przy
-        // pierwszym uruchomieniu, żeby na maszynach ze stałą sesją nie zbierały
-        // się śmieci.
+        // Prefiksy poprzednich schematów. Ich klucze są usuwane przy starcie,
+        // żeby na maszynach bez resetu sesji nie zbierały się śmieci. Przy
+        // każdej zmianie SCRIPT_ID_PREFIX poprzedni trafia tutaj — pilnuje
+        // tego test w 02-defaults.
         LEGACY_ID_PREFIXES: ['statsHelper_v8_0_0_', 'statsHelper_v8_1_0_', 'statsHelper_v8_2_0_',
                              'statsHelper_v8_3_0_', 'statsHelper_v8_4_0_', 'statsHelper_v8_5_0_',
-                             'statsHelper_v8_6_0_', 'statsHelper_v9_0_0_', 'statsHelper_v9_2_0_'],
+                             'statsHelper_v8_6_0_', 'statsHelper_v9_0_0_', 'statsHelper_v9_2_0_',
+                             'statsHelper_v1_0_0_'],
         /**
-         * Czy pisać cokolwiek do konsoli. Wartość bierze się z jednego miejsca
-         * na górze pliku (SCRIPT_LOGS_ENABLED), a tutaj żyje dlatego, że
-         * SH.logsOn() / SH.logsOff() przełączają ją w locie — stała na górze
-         * jest tylko wartością startową.
+         * Czy pisać do konsoli. Wartość startowa pochodzi z SCRIPT_LOGS_ENABLED
+         * w nagłówku; tutaj żyje, bo SH.logsOn() i SH.logsOff() przełączają ją
+         * w locie.
          */
         DEBUG_MODE: SCRIPT_LOGS_ENABLED === true,
         UI_UPDATE_INTERVAL_MS: 1000,
@@ -204,60 +133,35 @@ const SCRIPT_LOGS_ENABLED = false;
         SETTINGS_PANEL_ACCENT_COLOR: '#141414',
         SETTINGS_PANEL_INITIAL_WIDTH_PX: 450,
         /**
-         * Adres, spod którego ludzie uruchamiają skrypt zakładką w przeglądarce.
-         * Stąd bierze go ConfigCode.link(), składając gotową zakładkę z kodem
-         * ustawień — żeby adres stał w JEDNYM miejscu, a nie w dokumentacji
-         * i w kodzie osobno.
+         * Adres, spod którego zakładka pobiera skrypt. Z niego ConfigCode.link()
+         * składa gotową zakładkę z kodem ustawień. Pusty adres znaczy „zakładki
+         * nie ma”: panel pokazuje podpowiedź, a kod ustawień działa bez zmian.
          *
-         * =============================================================
-         * DLACZEGO `raw.`, A NIE ADRES WYDANIA NA github.com
-         * =============================================================
-         * Bo zakładka pobiera plik przez `fetch` z CUDZEJ strony, czyli
-         * zapytaniem międzydomenowym — a takie przechodzi tylko wtedy, gdy
-         * serwer odpowie nagłówkiem `Access-Control-Allow-Origin`.
-         *
-         *   github.com/…/releases/latest/download/counter.js
-         *       -> 302 BEZ tego nagłówka, przeglądarka zrywa zapytanie:
-         *          „has been blocked by CORS policy”. Adres działa przy
-         *          KLIKNIĘCIU (zwykłe pobranie pliku), ale nie przez fetch —
-         *          i na tym się przejechaliśmy w 1.2.0.
-         *   raw.githubusercontent.com/…
-         *       -> 200 z `access-control-allow-origin: *`.
-         *
-         * Gałąź `release` to wskaźnik „ostatnie wydanie”: przesuwa ją workflow
-         * wydania po opublikowaniu tagu, więc uruchamia się wyłącznie kod,
-         * który ktoś świadomie wydał — a nie bieżący stan `main`.
-         *
-         * Przypięcie do konkretnej wersji: ta sama ścieżka z tagiem zamiast
-         * `release` (…/counter/v1.2.0/counter.js).
+         * Wartość podstawia build.js z pola `config.releaseUrl` w package.json,
+         * więc w źródłach adresu nie ma — każde miejsce publikacji ustawia
+         * własny. Serwer musi odpowiadać nagłówkiem
+         * `Access-Control-Allow-Origin`: zakładka pobiera plik przez `fetch`
+         * ze strony T-REX, a bez nagłówka (także po przekierowaniu, które go
+         * gubi) przeglądarka zrywa zapytanie („blocked by CORS policy”).
          */
-        RELEASE_URL: 'https://raw.githubusercontent.com/YafremauAliaksei/counter/release/counter.js',
+        RELEASE_URL: '',
         /**
-         * Hasła z góry pliku, sprowadzone do jednej postaci (patrz
-         * normalizeAccessPasswords). Porównanie z buforem klawiatury robi
-         * InputManager.
-         *
-         * Pusta lista jest dozwolonym stanem i znaczy „panelu nie otwiera żadne
-         * hasło” — wtedy zostaje konsola (SH.SettingsPanel.toggle()).
+         * Hasła z nagłówka w jednej postaci (normalizeAccessPasswords).
+         * Porównuje je z buforem klawiatury InputManager. Pusta lista znaczy
+         * „żadne hasło nie otwiera panelu” — zostaje SH.SettingsPanel.toggle().
          */
         SETTINGS_PANEL_ACCESS_PASSWORDS: normalizeAccessPasswords(SETTINGS_ACCESS_PASSWORDS),
         /**
-         * DZIAŁY.
+         * DZIAŁY. Kolejność w mapie jest kolejnością na ekranie; panel,
+         * linia 2 i menedżer zadań chodzą po tej mapie, więc nowy dział to
+         * jedna linia tutaj plus nazwa w trzech słownikach.
          *
-         * Dopisanie kolejnego to JEDNA linia tutaj plus nazwa w trzech
-         * słownikach: panel, linia 2 i menedżer zadań chodzą po tej mapie,
-         * a nie po wpisanej gdzieś liście trzech kluczy. Kolejność w mapie jest
-         * kolejnością na ekranie.
+         * `urlKeyword` — po nim karta rozpoznaje sama siebie w adresie T-REX.
+         * Dział bez tego pola nie jest nigdy kartą.
          *
-         * `urlKeyword` to sposób, w jaki karta rozpoznaje SAMA SIEBIE po adresie
-         * T-REX. Dział bez tego pola nie zostanie nigdy rozpoznany jako karta —
-         * i o to chodzi przy OTHER.
-         *
-         * OTHER (1.3.2) — dział RĘCZNY, „pozostałe”. Nie ma swojej karty, więc
-         * licznik nie zwiększy go nigdy sam: liczby wpisuje się w panelu.
-         * Po co: paczki bywają robione poza trzema znanymi procesami, a do tej
-         * pory nie było ich gdzie zapisać — wpisywano je do cudzego działu albo
-         * przepadały, przez co tempo zmiany kłamało w dół.
+         * OTHER — dział ręczny na paczki robione poza trzema procesami. Nie ma
+         * swojej karty, więc liczby wpisuje się w panelu; licznik nie zwiększa
+         * go sam.
          */
         KNOWN_TAB_TYPES: {
             CRET: { key: 'CRET', displayNameKey: 'tabName_CRET', baseColorHex: '#0078D7', urlKeyword: 'CRETURN' },
@@ -269,11 +173,8 @@ const SCRIPT_LOGS_ENABLED = false;
         DEFAULT_UNKNOWN_TAB_DETAILS: { key: 'UNKNOWN', displayNameKey: 'tabName_UNKNOWN', baseColorHex: '#808080' },
         UNKNOWN_TAB_INSTANCE_ID_PREFIX: 'unknownTabInstance_',
         MAX_PAGE_OVERLAY_OPACITY_PERCENT: 15,
-        // 8.3.0: wcześniej nazywało się SHIFT_TIMES_UTC_PLUS_2, choć w obliczeniu
-        // nie ma ani jednej operacji na UTC — wszystko liczy się po CZASIE
-        // LOKALNYM przeglądarki (now.getHours()). Nazwa obiecywała przesunięcie,
-        // którego w kodzie nie było, i przy przejściu Polski na czas zimowy
-        // (UTC+1) wprowadzałaby w błąd.
+        // Granice rozpoznawania zmiany, w czasie LOKALNYM przeglądarki
+        // (getHours), bez żadnego przeliczania na UTC.
         SHIFT_TIMES_LOCAL: {
             DAY_SHIFT_START_H: 6, DAY_SHIFT_START_M: 19, DAY_SHIFT_END_H: 17, DAY_SHIFT_END_M: 55,
             NIGHT_SHIFT_START_H: 18, NIGHT_SHIFT_START_M: 19, NIGHT_SHIFT_END_H: 5, NIGHT_SHIFT_END_M: 55,
@@ -296,193 +197,131 @@ const SCRIPT_LOGS_ENABLED = false;
         STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS: 'allLocalTabConfigs',
         STORAGE_PREFIX_TAB_COUNTER: 'counter_',
         /**
-         * Licznik przedmiotów, które pojechały NA SPRZEDAŻ — osobny klucz na każdą
-         * kartę, dokładnie jak licznik ogólny obok.
-         *
-         * Dlaczego osobno, a nie z dziennika wartości: dziennik napełnia się
-         * wyłącznie przy włączonym module cen, a procent sprzedaży ma działać
-         * w trybie domyślnym, czyli bez ani jednego zapytania do sieci. Kierunek
-         * ustala się z samego tekstu strony (patrz Routing) i sieci nie wymaga.
+         * Licznik przedmiotów sprzedanych — klucz na kartę, jak licznik ogólny.
+         * Osobny, a nie liczony z dziennika wartości, bo dziennik działa tylko
+         * z modułem cen, a procent sprzedaży ma działać bez sieci. Kierunek
+         * wynika z samego tekstu strony (Routing).
          */
         STORAGE_PREFIX_TAB_SOLD: 'sold_',
         /**
-         * Licznik przedmiotów, które WYPADAJĄ Z MIANOWNIKA procentu sprzedaży —
-         * osobny klucz na kartę, dokładnie jak dwa liczniki obok.
-         *
-         * Trzyma się go osobno, a nie odejmuje na oko przy rysowaniu, bo linie
-         * 2 i 7 sumują po wszystkich kartach naraz: bez własnego klucza karta
-         * sąsiednia nie miałaby skąd wziąć swojej liczby audytów.
+         * Licznik przedmiotów spoza mianownika procentu (audyty, wpisy ręczne)
+         * — klucz na kartę. Linie 2 i 7 sumują wszystkie karty, więc każda
+         * musi mieć tę liczbę we własnym kluczu.
          */
         STORAGE_PREFIX_TAB_NEUTRAL: 'neutral_',
         /**
-         * ZADANIA (1.3.0).
-         *
-         * Lista zadań i identyfikator aktywnego leżą pod JEDNYM kluczem
-         * wspólnym dla wszystkich kart: zadanie jest własnością człowieka, a nie
-         * karty — kto przechodzi do innego procesu, przechodzi w nim z każdą
-         * otwartą kartą naraz.
-         *
-         * Liczniki są odwrotnie: klucz na parę zadanie+karta, dokładnie jak
-         * liczniki zmiany i z tego samego powodu — dwie karty piszące jeden
-         * klucz zamazywałyby sobie liczby nawzajem.
+         * ZADANIA. Lista zadań i aktywne zadanie leżą pod jednym kluczem
+         * wspólnym dla kart: zadanie należy do człowieka, nie do karty.
+         * Liczniki mają klucz na parę zadanie+karta — dwie karty piszące
+         * jeden klucz zamazywałyby sobie liczby.
          */
         STORAGE_KEY_TASKS: 'tasks',
         STORAGE_PREFIX_TASK_COUNTER: 'taskcnt_',
         /** Nazwa pierwszego zadania: cała zmiana jest jednym procesem, dopóki człowiek nie powie inaczej. */
         DEFAULT_TASK_NAME: 'Default',
         /**
-         * Poniżej tylu milisekund pracy tempo NIE ISTNIEJE i pokazuje się zero.
-         *
-         * Dziesięć sekund to granica, poniżej której dzielenie daje liczby
-         * w rodzaju „3600 paczek na godzinę” — pierwsza paczka tuż po starcie
-         * zadania. Ta sama granica obowiązuje przy przeliczaniu tempa wpisanego
-         * ręcznie na paczki, bo tam pomyłka jest jeszcze droższa: wpisana liczba
-         * trafia do liczników na stałe.
+         * Poniżej tylu milisekund pracy tempo wynosi zero. Pierwsza paczka
+         * tuż po starcie dawałaby „3600 na godzinę”. Ta sama granica chroni
+         * przeliczanie tempa wpisanego ręcznie na paczki, które trafiają do
+         * liczników na stałe.
          */
         RATE_MIN_WORKED_MS: 10000,
         /** Granica nazwy — panel ma wąską kolumnę, a nazwa stoi też w linii 8. */
         TASK_MAX_NAME_LEN: 24,
         /**
-         * Skróty do ustawiania początku zadania, w minutach wstecz.
-         *
-         * Wartości wzięte z tego, jak to wygląda na hali: o nowym procesie
-         * człowiek dowiaduje się z wyprzedzeniem, zbiera narzędzia i dopiero
-         * potem siada do skryptu — od faktycznego startu mijają wtedy dwie,
-         * pięć, czasem kilkanaście minut. Stąd krótkie odstępy na początku
-         * listy, a nie równe ćwiartki godziny.
+         * Skróty początku zadania, w minutach wstecz. Gęsto na początku, bo
+         * człowiek siada do skryptu zwykle kilka minut po faktycznym starcie
+         * procesu.
          */
         TASK_QUICK_OFFSETS_MIN: [0, 2, 5, 15, 30],
         SESSION_STORAGE_TAB_INSTANCE_ID_KEY: 'tabInstanceId',
         STORAGE_KEY_VALUE_LOG: 'valueLog',
 
-        // --- MAGAZYN WSPÓLNY, NIEZWIĄZANY Z WERSJĄ ---
-        // Świadome odstępstwo od zasady „wersja w każdym kluczu”: archiwum
-        // podsumowań zmian musi przeżyć aktualizację skryptu, inaczej historia
-        // zerowałaby się przy każdej instalacji.
-        //
-        // Tego klucza NIE rusza ani reset zmiany, ani czyszczenie starych wersji.
-        // Przycisk pełnego resetu go usuwa — jawnie wyliczony, patrz ownKeys().
+        // --- MAGAZYN WSPÓLNY, NIEZALEŻNY OD SCHEMATU ---
+        // Archiwum podsumowań zmian ma przeżyć aktualizację skryptu, więc jego
+        // prefiks nie zawiera wersji. Nie rusza go ani reset zmiany, ani
+        // sprzątanie starych schematów; usuwa go tylko pełny reset (ownKeys()).
         SHARED_ID_PREFIX: 'statsHelper_shared_',
         STORAGE_KEY_VALUE_ARCHIVE: 'valueArchive',
         STORAGE_KEY_FX_RATES: 'fxRates',
-        /**
-         * KURSY WALUT (9.0.0).
-         *
-         * Cena przychodzi w walucie rynku, z którego została zdjęta: funty
-         * z co.uk, dolary z com, korony ze se. Składać ich w jedną sumę nie
-         * wolno, a trzymać sumę w pięciu walutach nie ma sensu — dlatego
-         * wszystko sprowadza się do euro po kursie, który skrypt bierze
-         * z otwartego źródła.
-         *
-         * Trzy źródła po kolei, do pierwszego sukcesu. Sprawdzone na żywo pod
-         * kątem nagłówków CORS i szybkości; frankfurter.app i exchangerate.host
-         * odpadły (pierwszy nie oddaje CORS, drugi wymaga klucza).
-         *
-         * ⚠ 9.2.0: te zapytania NIE WYCHODZĄ przy starcie. Kursy pobierane są
-         * dopiero po ręcznym włączeniu modułu cen — patrz FxRates.initOffline()
-         * i priceModuleOn().
-         *
-         * ⚠ Dokładność NIE jest tu potrzebna co do grosza: to szacunek „ile
-         * wyrobiłem na zmianie”, a nie księgowość. Kurs sprzed miesiąca daje
-         * błąd rzędu procentów, co dla takiego szacunku jest bez znaczenia.
-         */
-        FX_PROVIDERS: [
-            { name: 'jsdelivr', url: 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/eur.json',
-              pick: (j) => j && j.eur },
-            { name: 'er-api',   url: 'https://open.er-api.com/v6/latest/EUR',
-              pick: (j) => j && j.rates },
-            // 9.1.0: floatrates oddaje rate ŁAŃCUCHEM („1.15514929”), a normalize()
-            // przyjmowało wyłącznie liczbę — przez co trzecie źródło po cichu nie
-            // działało nigdy i „trzy źródła po kolei” były w praktyce dwoma.
-            // Rzutowanie typu robi teraz i pick, i samo normalize.
-            { name: 'floatrates', url: 'https://www.floatrates.com/daily/eur.json',
-              pick: (j) => { if (!j) return null; const o = {}; for (const k in j) o[k] = j[k] && Number(j[k].rate); return o; } },
-        ],
-        // Kursy zmieniają się wolno, a skrypt startuje co zmianę.
-        // Doba to jedno zapytanie dziennie i zawsze „kurs z tego miesiąca”.
+        // Źródła kursów walut: PriceSources.fxProviders (src/15-price-sources.js).
+        // Kursy zmieniają się wolno: jedno zapytanie na dobę wystarcza.
         FX_TTL_MS: 24 * 60 * 60 * 1000,
         FX_TIMEOUT_MS: 8000,
         /**
-         * Kursy zapasowe (ile jednostek waluty za 1 EUR) na wypadek, gdy sieć
-         * albo CSP nie pozwalają zapytać. Zdjęte 15.09.2026; trzy niezależne
-         * źródła zgodziły się tego dnia co do trzeciego miejsca po przecinku.
-         *
-         * 9.2.0: to jest wartość, z którą skrypt pracuje przy WYŁĄCZONYM module
-         * cen. Nie ma tu żadnego zapytania — tablica jest wpisana w plik.
+         * Kursy wbudowane (jednostek waluty za 1 EUR). Z nimi skrypt pracuje
+         * przy wyłączonym module cen i wtedy, gdy sieć albo CSP nie pozwalają
+         * zapytać. Stan z 15.09.2026, zgodny w trzech źródłach.
          */
         FX_FALLBACK: { EUR: 1, USD: 1.156, GBP: 0.856, PLN: 4.33, SEK: 11.27, CAD: 1.605 },
-        // 8.5.0: klucz pamięci cen został wyłącznie do jednorazowego sprzątania —
-        // sama pamięć została usunięta.
+        /**
+         * Waluty wyświetlania i znak stawiany po kwocie. Tylko te, dla których
+         * FX_FALLBACK ma kurs — przeliczenie musi działać bez sieci. Liczy się
+         * zawsze w euro; waluta wyświetlania to ostatnie mnożenie przy
+         * rysowaniu, więc jej zmiana w trakcie zmiany niczego nie gubi.
+         */
+        DISPLAY_CURRENCIES: { EUR: '€', PLN: 'zł', GBP: '£', SEK: 'kr', USD: '$', CAD: 'CA$' },
+        // Klucze wspólne, które już nie są używane — tylko do sprzątania.
         LEGACY_SHARED_KEYS: ['asinPrices'],
         /**
-         * Wpisów w dzienniku bieżącej zmiany. 10,5 h pracy tylu nie da, to
-         * zabezpieczenie przed nieskończonym wzrostem przy nietypowym
-         * zachowaniu strony.
-         *
-         * 9.1.0: podniesione z 3000. Dziennik jest teraz WSPÓLNY na wszystkie
-         * karty, a jeden fizyczny przedmiot zgodnie z prawdą daje dwa wpisy
-         * (wyjechał z CRET do WHD ze znakiem minus, wrócił sprzedażą z karty
-         * WHD ze znakiem plus). 6000 wpisów to ~1 MB JSON — granica, za którą
-         * localStorage dzielony z samym TREX robi się ciasny.
+         * Górna granica wpisów w dzienniku zmiany — ochrona przed wzrostem bez
+         * końca. Dziennik jest wspólny dla kart, a jeden przedmiot może dać
+         * dwa wpisy (minus w CRET, plus po sprzedaży z WHD). 6000 wpisów to
+         * ok. 1 MB JSON; więcej robi się ciasno w localStorage dzielonym z T-REX.
          */
         VALUE_LOG_MAX_ENTRIES: 6000,
-        // Archiwum przepisywane jest nie przy każdym wpisie, tylko paczką: przez
-        // zmianę idą tysiące przedmiotów, a pełny rozbiór i złożenie 60 zmian
-        // dla każdego z nich to czysta strata i na CPU, i na zapis do localStorage.
+        // Archiwum zapisuje się paczką, a nie przy każdym wpisie — rozbiór
+        // i złożenie 60 zmian na każdy przedmiot to strata CPU i zapisów.
         VALUE_ARCHIVE_WRITE_DEBOUNCE_MS: 5000,
-        // Archiwum trzyma tylko PODSUMOWANIA zmian, nie pozycje: pełna lista
-        // z 60 zmian nie zmieściłaby się w localStorage dzielonym z samym TREX.
+        // Archiwum trzyma same podsumowania zmian, nie pozycje — pełne listy
+        // z 60 zmian nie zmieściłyby się w localStorage.
         VALUE_ARCHIVE_MAX_SHIFTS: 60,
 
-        // --- Zarządzanie cyklem życia zmiany (8.1.0) ---
-        // Zmiana trwa 10,5 h. Jeśli zapisany początek zmiany jest starszy niż
-        // 12 h — dane są na pewno z poprzedniej zmiany (maszyna nie zresetowała
-        // sesji) i podlegają wyczyszczeniu.
+        // --- Cykl życia zmiany ---
+        // Zmiana trwa 10,5 h. Zapisany początek starszy niż 12 h znaczy dane
+        // z poprzedniej zmiany (maszyna bez resetu sesji) — do wyczyszczenia.
+        // Wyjątek: zegar ścienny wskazuje wciąż tę samą zmianę, bo w noc
+        // zmiany czasu nocna zmiana trwa 12,42 h (checkStaleOnBoot).
         STALE_SESSION_MS: 12 * 60 * 60 * 1000,
+        // Górna granica licznika czytanego z magazynu. Zmiana to kilkaset
+        // paczek; wartość spoza zakresu to śmieć (`'9'.repeat(21)` dałoby 1e21).
+        COUNTER_MAX: 1000000,
         // Wpisy o aktywnych kartach starsze niż ten okres są wyrzucane.
         TAB_INSTANCE_TTL_MS: 12 * 60 * 60 * 1000,
         // Różnica między zapisanym a wyliczonym początkiem zmiany, po której
         // zmianę uznaje się za inną (ochrona przed drganiem paru sekund).
         SHIFT_IDENTITY_TOLERANCE_MS: 60 * 1000,
-        // Dopóki zmiana nie jest rozpoznana (skrypt wystartował przed otwarciem
-        // okna zmiany) — sprawdzać ponownie w tym odstępie.
+        // Co ile sprawdzać, jaka zmiana trwa — przez cały czas życia skryptu,
+        // żeby karta otwarta przez noc sama zauważyła następną zmianę
+        // (Main.startShiftWatch).
         SHIFT_RETRY_INTERVAL_MS: 30 * 1000,
         // Autozapis ustawień po zmianie stanu.
         AUTOSAVE_DEBOUNCE_MS: 1000,
         // Okno ciszy po zastosowaniu danych z innej karty: chroni przed
         // nieskończonym ping-pongiem zapisów między kartami.
         REMOTE_APPLY_SUPPRESS_MS: 2500,
+        // Wyzwalacze liczenia: pierwszy podnosi flagę „zaczął się przedmiot”,
+        // drugi przy podniesionej fladze daje +1. Teksty rosyjskie to napisy
+        // samego T-REX. PROBLEM-SOLVE jest wyłączony, bo taki przedmiot wraca
+        // do obsługi i zostałby policzony dwa razy.
         PRE_TRIGGER_REGEX: /poniżej|видите ниже|Transparency/i,
         AUTO_TRIGGER_REGEX: /Przypisz (nowy|ponownie)|канирование номера LP:|Przedmiot wysłano do (?!PROBLEM-SOLVE\b).+/i,
         /**
-         * DOKĄD POJECHAŁ PRZEDMIOT: sprzedaż czy utylizacja (9.0.0).
+         * KODY KIERUNKU: sprzedaż czy utylizacja.
          *
-         * Na ekranie pojawia się linia typu „Zeskanuj <KOD>” albo
-         * „Zeskanuj - <KOD>” (z myślnikiem i bez — oba warianty występują).
-         * Kod mówi, w którą stronę pojechał przedmiot, i jego wartość idzie
-         * albo na plus, albo na minus.
+         * Na ekranie pojawia się „Zeskanuj <KOD>” albo „Zeskanuj - <KOD>”.
+         * Kod może przyjść przed wyzwalaczem końcowym, razem z nim albo po
+         * nim, ale zawsze przed następnym przedmiotem — dlatego kierunek śledzi
+         * osobny automat (Routing), a nie odczyt w chwili zakończenia.
          *
-         * Moment pojawienia się kodu NIE jest związany z zakończeniem
-         * przedmiotu: może wyskoczyć przed wyzwalaczem końcowym, razem z nim
-         * albo już po nim — ale zawsze PRZED początkiem następnego przedmiotu.
-         * Dlatego kierunek śledzi osobny mały automat (moduł Routing), a nie
-         * odczyt „w momencie zakończenia”.
-         */
-        /**
-         * TRZY LISTY KODÓW I JEDNA ZASADA WSPÓLNA DLA WSZYSTKICH (1.3.0).
+         * Dopasowanie zaczepia się o `Zeskanuj` i początek kodu, bez domykania
+         * ogona: `External` łapie też `External-Repair`. Wielkość liter nie ma
+         * znaczenia (flaga `i`, Routing.canon sprowadza do zapisu z listy).
          *
-         * Dopasowanie NIE jest dokładne: wzorzec zaczepia się o słowo
-         * `Zeskanuj` i o początek kodu, a ogona nie domyka. Dzięki temu jedna
-         * pozycja na liście obsługuje całą rodzinę: `External` łapie też
-         * `External-Repair`, `AUDIT` łapie `Audit-cokolwiek`. Wielkość liter
-         * nie ma znaczenia (wzorzec ma flagę `i`, a Routing.canon sprowadza
-         * trafienie do zapisu z listy).
-         *
-         * PRZEDROSTEK `NS-` znaczy „nie-sort” i opisuje GABARYT, a nie kierunek:
-         * `NS-Stow-Unsellable` jedzie tam samo, co `Stow-Unsellable`. Dlatego
-         * każda rodzina niesprzedażowa ma na liście oba warianty. Wyjątkiem są
-         * kody sprzedażowe magazynów (`CRITS-*`) — tam odpowiednikiem dla
-         * nie-sortu jest jeden wspólny `NS-PL-Sellable`, a nie `NS-CRITS-*`.
+         * Przedrostek `NS-` („nie-sort”) opisuje gabaryt, nie kierunek:
+         * `NS-Stow-Unsellable` jedzie tam, gdzie `Stow-Unsellable`, więc każda
+         * rodzina niesprzedażowa ma oba warianty. Dla kodów magazynowych
+         * `CRITS-*` odpowiednikiem nie-sortu jest jeden `NS-PL-Sellable`.
          */
         ROUTE_SELL_CODES: ['CRITS-PRG2', 'CRITS-MXP6', 'CRITS-POZ1', 'CRITS-LEJ5',
                            'PL-Sellable', 'NS-PL-Sellable'],
@@ -494,40 +333,25 @@ const SCRIPT_LOGS_ENABLED = false;
                              'Refurb', 'NS-Refurb',
                              'External', 'NS-External'],
         /**
-         * KODY, KTÓRYCH NIE DA SIĘ ROZSTRZYGNĄĆ — NIGDY (1.3.0).
+         * Kody, których nie da się rozstrzygnąć nigdy. Audyt oddaje przedmiot
+         * audytorowi, który zdecyduje o nim długo po zniknięciu z ekranu, więc
+         * taki przedmiot wypada z mianownika procentu sprzedaży. Brak kodu to
+         * co innego — zostaje w mianowniku (Routing.countDirection).
          *
-         * Audyt to nie kierunek, tylko oddanie przedmiotu w cudze ręce:
-         * o tym, czy pojedzie na sprzedaż, zadecyduje audytor w ciągu swojej
-         * zmiany, czyli godziny po tym, jak przedmiot zniknął z ekranu. Czekanie
-         * na tę odpowiedź nie ma sensu, bo nie przyjdzie.
-         *
-         * Skutek dla procentu sprzedaży: taki przedmiot WYPADA Z MIANOWNIKA.
-         * Zrobionych paczek bywa więc więcej niż paczek, z których liczy się
-         * procent — i to jest poprawne, a nie błąd rachunku. Różnica między
-         * audytem a „kodu nie było wcale” jest celowa: brak kodu zostaje
-         * w mianowniku (patrz komentarz przy Routing.countDirection).
-         *
-         * `NS-AUDIT` na dzień dodania listy nie był widziany w pracy ani razu.
-         * Stoi tu, bo przedrostek `NS-` może wyjść przy każdym kodzie, a linia
-         * na liście kosztuje mniej niż zgadywanie po roku, czemu procent
-         * odskoczył.
+         * `NS-AUDIT` nie był jeszcze widziany w pracy; stoi, bo przedrostek
+         * `NS-` może wyjść przy każdym kodzie.
          */
         ROUTE_NEUTRAL_CODES: ['AUDIT', 'NS-AUDIT'],
         /**
-         * Kody, które same z siebie niczego nie rozstrzygają: przedmiot może
-         * pojechać i na sprzedaż, i do utylizacji. Kierunek staje się znany
-         * z następnej linii — ROUTE_CONFIRM_SELL albo ROUTE_CONFIRM_UNSELL.
-         * Do tego czasu przedmiot wisi nieokreślony.
+         * Kody bez kierunku: przedmiot może pojechać w obie strony. Kierunek
+         * rozstrzyga następna linia (ROUTE_CONFIRM_SELL / ROUTE_CONFIRM_UNSELL),
+         * do tego czasu przedmiot jest nieokreślony.
          */
         ROUTE_AMBIGUOUS_CODES: ['Secondary-Sorting', 'NS-Secondary-Sorting'],
-        // Linie uściślające zostają BEZ przedrostka `NS-` i to nie jest
-        // przeoczenie: `Transfer - Sellable` i `FBATransfer` to STATUS
-        // przedmiotu, a status jest ten sam dla sortu i dla nie-sortu.
-        // Przedrostek opisuje gabaryt, więc pojawia się przy kodzie kierunku
-        // (NS-Secondary-Sorting), a nie przy potwierdzeniu.
+        // Linie uściślające są bez przedrostka `NS-`: to status przedmiotu,
+        // taki sam dla sortu i nie-sortu. Przedrostek stoi przy kodzie kierunku.
         ROUTE_CONFIRM_SELL: /Przedmiot\s+wys[łl]ano\s+do\s+Transfer\s*[-–—]\s*Sellable/gi,
-        // Ogon nazwy bywa różny („FBATransfer-...”), więc czepiamy się początku
-        // słowa, a nie dokładnego dopasowania.
+        // Ogon nazwy bywa różny („FBATransfer-...”) — dopasowanie po początku.
         ROUTE_CONFIRM_UNSELL: /Przedmiot\s+wys[łl]ano\s+do\s+FBATransfer/gi,
         TRIGGER_OBSERVE_AREA_SELECTOR: 'body',
         DEFAULT_TRIGGER_MUTATION_DEBOUNCE_MS: 50,
@@ -541,29 +365,18 @@ const SCRIPT_LOGS_ENABLED = false;
             { code: 'NumpadMultiply', name_key: 'key_NumpadMultiply' }, { code: 'NumpadSubtract', name_key: 'key_NumpadSubtract' },
             { code: 'NumpadAdd', name_key: 'key_NumpadAdd' }, { code: 'F10', name_key: 'key_F10' },
         ],
-        // --- KARTA CENY (8.2.0) ---
-        // Bezpośrednie zapytanie do amazon.* ze strony jest niemożliwe:
-        // Same-Origin Policy. Sprawdzone na żywo — zablokowane we wszystkich
-        // wariantach, łącznie z no-cors, iframe, script src i widżetami
-        // partnerskimi amazon-adsystem. Działają dokładnie dwa źródła:
-        //   r.jina.ai       — tekst strony, oddaje nagłówki CORS;
-        //   graph.keepa.com — obrazek, któremu CORS z zasady nie jest potrzebny.
+        // --- KARTA CENY ---
+        // Źródła ceny i ich hosty: src/15-price-sources.js. Tu stoją tylko
+        // ich nastawy (PRICE_KEEPA_*, PRICE_JINA_*, PRICE_OCR_*, pola keepa
+        // w MARKETPLACES) i to, co wspólne dla każdego źródła.
         /**
-         * SKLEPY AMAZON (8.5.0).
+         * SKLEPY AMAZON. Wybrany sklep rozstrzyga naraz link z ASIN, rynek
+         * wykresu Keepa i walutę ceny — rozdzielenie pozwoliłoby otworzyć
+         * amazon.de, a liczyć ceny z amazon.co.uk.
          *
-         * Jedno ustawienie rozstrzyga naraz trzy rzeczy: dokąd prowadzi link
-         * z ASIN, z którego rynku Keepa rysuje wykres i w jakiej walucie liczy
-         * się dziennik. Rozdzielać ich na osobne ustawienia nie wolno: dałoby
-         * się wtedy otworzyć link na amazon.de, a sumę zbierać po cenach
-         * z amazon.co.uk.
-         *
-         * Pole keepa — wartość parametru domain dla graph.keepa.com.
-         *
-         * ⚠ POKRYCIE KEEPA JEST NIEPEŁNE. Sprawdzone na żywo: wykres z danymi
-         * oddają de, co.uk, com, it, fr, es, nl, ca. Dla POLSKI Keepa oddaje
-         * pusty wykres — i dla łańcuchowego `pl`, i dla liczbowego `16`, na
-         * wszystkich sprawdzonych polskich bestsellerach. Link do produktu
-         * działa przy tym dla każdego sklepu z tablicy, tylko ceny nie będzie.
+         * `keepa` — wartość parametru domain dla graph.keepa.com.
+         * `keepa_ok` — czy Keepa ma dane dla rynku. Dla Polski oddaje pusty
+         * wykres; link działa, ceny nie będzie.
          */
         MARKETPLACES: {
             'de':     { host: 'www.amazon.de',     keepa: 'de',     currency: 'EUR', keepa_ok: true  },
@@ -579,29 +392,23 @@ const SCRIPT_LOGS_ENABLED = false;
             'pl':     { host: 'www.amazon.pl',     keepa: 'pl',     currency: 'PLN', keepa_ok: false },
         },
         DEFAULT_MARKETPLACE: 'de',
-        // Blok ceny na stronie produktu. Odpowiedź ~350-1800 bajtów zamiast 200 KB.
+        // Blok ceny na stronie produktu — odpowiedź ok. 1 KB zamiast 200 KB.
         PRICE_JINA_SELECTOR: '#corePriceDisplay_desktop_feature_div',
-        // Wiek pamięci jina, który nam odpowiada: 3 doby.
-        // Pomiar: 3 dni -> 0,6 s z pamięci, 0 -> 13,1 s zapytanie na żywo.
+        // Akceptowany wiek pamięci r.jina.ai: 3 doby (0,6 s z pamięci
+        // zamiast ok. 13 s zapytania na żywo).
         PRICE_JINA_CACHE_TOLERANCE_S: 259200,
         PRICE_KEEPA_RANGE: 3,       // dni na wykresie
-        // Natywny rozmiar PNG u Keepy. W trybie przycięcia obrazek wychodzi
-        // dokładnie w tym rozmiarze i przesuwa się w lewo — wtedy tekst legendy
-        // zostaje piksel w piksel i czyta się najlepiej.
+        // Natywny rozmiar PNG Keepy. W trybie przycięcia obrazek ma dokładnie
+        // ten rozmiar i przesuwa się w lewo — tekst legendy zostaje piksel
+        // w piksel.
         PRICE_KEEPA_PNG_W: 500,
         PRICE_KEEPA_PNG_H: 200,
-        // Ramka legendy wewnątrz PNG — ta część, w której Keepa drukuje same ceny.
-        // Współrzędne dobrane nie na oko: obrazki 20 produktów rozebrane przez
-        // canvas (Keepa oddaje CORS, więc dostęp do pikseli jest). Znaczniki
-        // legendy — kółka 8x8 — leżą stabilnie w wierszach y 25..32 i y 37..44,
-        // a lewa krawędź bloku pływa w zakresie x 402..421, bo legenda jest
-        // wyrównana do prawej i przesuwa się zależnie od długości ceny.
-        // Ramka poniżej sprawdzona na wszystkich 20 próbkach: czysty blok z cenami,
-        // bez siatki i linii wykresu.
-        // Lewa granica 407 nie jest wybrana na ślepo: prawa oś wykresu stoi na
-        // x=399 albo x=405 (zależnie od szerokości podpisów), a tekst legendy
-        // nigdzie nie zaczyna się na lewo od x=423. 407 na pewno odcina oś
-        // i siatkę, nie dotykając tekstu. Sprawdzone na wszystkich 20 próbkach.
+        // Ramka legendy w PNG — część, w której Keepa drukuje same ceny.
+        // Wyznaczona z pikseli 20 obrazków: znaczniki serii (kółka 8x8) leżą
+        // w wierszach y 25..32 i 37..44; legenda jest wyrównana do prawej,
+        // więc jej lewa krawędź pływa w x 402..421. Prawa oś wykresu stoi na
+        // x=399 albo 405, a tekst nie zaczyna się na lewo od x=423 — granica
+        // 407 odcina oś i siatkę, nie dotykając tekstu.
         PRICE_KEEPA_LEGEND_X: 407,
         PRICE_KEEPA_LEGEND_Y: 20,
         PRICE_KEEPA_LEGEND_W: 93,
@@ -610,91 +417,69 @@ const SCRIPT_LOGS_ENABLED = false;
         PRICE_KEEPA_API_DOMAIN: 3,  // 1=com 2=co.uk 3=de
         PRICE_MIN_REQUEST_GAP_MS: 3000,
         /**
-         * LIMITY ZAPYTAŃ NA SESJĘ — ZDJĘTE W 9.1.0.
+         * Limit zapytań na sesję — domyślnie bez limitu. Limit trafiałby pod
+         * koniec zmiany, gdy utrata ostatnich przedmiotów boli najbardziej.
+         * Tempo ogranicza PRICE_MIN_REQUEST_GAP_MS (najwyżej 20 zapytań na
+         * minutę) i to, że zapytanie idzie na przedmiot, a nie na mutację DOM.
+         * Przy wyłączonym module cen zapytań jest zero.
          *
-         * Wcześniej stały tu skończone liczby, a sens miały higieniczny: nie
-         * dobijać cudzego serwisu, jeśli skrypt zwariuje. W praktyce cena tego
-         * zabezpieczenia okazała się wyższa niż pożytek: w limit można wejść
-         * dopiero POD KONIEC zmiany, czyli dokładnie wtedy, gdy dziennik jest
-         * prawie zebrany i utrata ostatnich przedmiotów boli najbardziej.
-         *
-         * Samoograniczenie nie zniknęło i trzyma się na czym innym: przerwa
-         * PRICE_MIN_REQUEST_GAP_MS między zapytaniami fizycznie nie pozwala
-         * wyjść szybciej niż 20 zapytań na minutę, a zapytanie idzie na
-         * przedmiot, nie na mutację DOM.
-         *
-         * 9.2.0 dokłada do tego mocniejszy bezpiecznik: przy wyłączonym module
-         * cen liczba zapytań wynosi dokładnie ZERO, bo sieci nie dotyka nikt.
-         *
-         * Mechanizm limitów w kodzie ZOSTAŁ: w razie potrzeby skończona liczba
-         * wraca w locie, bez przeładowania — SH.setLimits({ images: 3000 }).
+         * Skończony limit ustawia się w locie: SH.setLimits({ images: 3000 }).
          */
         PRICE_MAX_REQUESTS_PER_SESSION: Infinity,
         PRICE_REQUEST_TIMEOUT_MS: 30000,
-        // --- Odczyt ceny z obrazka (8.4.0) ---
-        // Pasy wierszy legendy. Nie „na oko”: rozbiór 20 obrazków pokazał, że
-        // tekst jest zawsze dokładnie w tych wierszach — pierwsza seria y25..y31,
-        // druga y37..y43, wysokość znaku 7 pikseli.
+        // --- Odczyt ceny z obrazka ---
+        // Pasy wierszy legendy: pierwsza seria y25..y31, druga y37..y43,
+        // wysokość znaku 7 pikseli (wyznaczone z 20 obrazków).
         PRICE_OCR_BANDS: [[25, 31], [37, 43]],
-        // Bardziej w lewo nie ma czego czytać: prawa oś wykresu stoi na x=399..405.
+        // Na lewo od tego jest oś wykresu (x=399..405) — tekstu tam nie ma.
         PRICE_OCR_SCAN_FROM_X: 406,
         /**
-         * Osobna, bardziej lewa granica dla szukania KOLOROWEGO ZNACZNIKA serii (9.1.1).
-         *
-         * Legenda jest wyrównana do prawej, więc im dłuższa cena, tym bardziej
-         * w lewo ucieka cały blok. Przy cenie czterocyfrowej („€ 2,991.39”)
-         * kółko serii ląduje na x≈390 — czyli NA LEWO od PRICE_OCR_SCAN_FROM_X,
-         * i seria przestawała być rozpoznawana w ogóle: na karcie było
-         * „? 2991.39”.
-         *
-         * Granica tekstu i granica znacznika to różne rzeczy i rozdzielone są
-         * celowo: tekstu na lewo od 406 nadal czytać nie wolno (tam jest oś
-         * wykresu), a znacznika tam szukać można, bo rozpoznaje się go po
-         * NASYCONYM kolorze, a oś i siatka są szare.
+         * Lewa granica szukania kolorowego ZNACZNIKA serii — dalej niż granica
+         * tekstu. Legenda jest wyrównana do prawej, więc przy cenie
+         * czterocyfrowej („€ 2,991.39”) kółko serii ląduje na x≈390. Tekstu na
+         * lewo od 406 czytać nie wolno (oś), ale znacznik można tam szukać, bo
+         * rozpoznaje się go po nasyconym kolorze, a oś i siatka są szare.
          */
         PRICE_OCR_SERIES_FROM_X: 382,
-        // Na ile kolor musi być „kolorowy”, żeby uznać go za znacznik serii:
-        // max(R,G,B) - min(R,G,B). Wypełnienie pod wykresem to blady odcień
-        // (rozrzut poniżej 50), znacznik to czysty kolor (rozrzut powyżej 80).
+        // Minimalne max(R,G,B) - min(R,G,B) znacznika serii. Wypełnienie pod
+        // wykresem ma rozrzut poniżej 50, znacznik powyżej 80.
         PRICE_OCR_SERIES_MIN_CHROMA: 60,
-        // Próg binaryzacji. Tekst jest wygładzony, ale przy 200 kształty glifów
-        // są stabilne.
+        // Próg binaryzacji; tekst jest wygładzony, ale przy 200 kształty
+        // glifów są stabilne.
         PRICE_OCR_INK_THRESHOLD: 200,
         PRICE_MAX_IMAGE_REQUESTS: Infinity,
-        // Pamięć karty na ostatnie wyniki. To nie jest cache (cena pytana jest
-        // od nowa na każdy przedmiot, patrz 8.5.0), tylko to, co rysuje się na
-        // ekranie, póki leci nowe zapytanie. Przez zmianę ASIN-ów jest ponad
-        // tysiąc, dlatego Mapa jest przycinana zasadą „wyrzucamy najdawniejszy”.
+        // Ostatnie wyniki do rysowania, póki leci nowe zapytanie — to nie jest
+        // pamięć cen (cena jest pytana na nowo przy każdym przedmiocie).
+        // Przycinana od najdawniejszego.
         PRICE_CACHE_MAX_ENTRIES: 300,
 
         /**
-         * PRZEGLĄD SKLEPÓW, GDY CENY NIE MA (8.6.0).
+         * PRZEGLĄD SKLEPÓW, GDY CENY NIE MA.
          *
-         * Keepa nierzadko oddaje pustą legendę dla wybranego rynku, choć
-         * produkt jest na stronie w sprzedaży: historia tego ASIN na tym rynku
-         * po prostu nie została zebrana. Ten sam produkt bywa przy tym na
-         * sąsiednim rynku — sprawdzone: B00006JCUB daje EUR 5,99 na amazon.de
-         * i EUR 13,31 na amazon.it.
+         * Keepa bywa bez danych dla wybranego rynku, choć produkt jest na
+         * sąsiednim (B00006JCUB: EUR 5,99 na amazon.de, EUR 13,31 na
+         * amazon.it). Wtedy skrypt przegląda pozostałe rynki i bierze
+         * pierwszy, który oddał cenę:
          *
-         * Dlatego po niepowodzeniu skrypt przegląda POZOSTAŁE sklepy i bierze
-         * pierwszy, który oddał cenę. Zasady przeglądu:
+         *   - tylko dla jednego przedmiotu; wybrany sklep się nie zmienia;
+         *   - wszystkie rynki z danymi Keepa (keepa_ok) — cena bywa tylko na
+         *     jednym z nich;
+         *   - najpierw rynek z linku na stronie (np. amazon.it/dp/…): tam
+         *     produkt był wystawiony, zwykle wystarcza jedno zapytanie;
+         *   - potem Europa, na końcu PRICE_FALLBACK_LAST; w grupie losowo,
+         *     żeby nie dobijać ciągle tego samego rynku;
+         *   - sekunda przerwy między próbami; przegląd przerywa się, gdy na
+         *     ekranie pojawi się inny przedmiot.
          *
-         *   - tylko dla JEDNEGO przedmiotu: ustawienie sklepu się nie zmienia,
-         *     następny przedmiot znów zaczyna od wybranego domyślnie;
-         *   - kolejność LOSOWA, żeby nie dobijać tego samego rynku zapasowego
-         *     tysiąc razy na zmianę;
-         *   - między próbami sekunda przerwy — to tło, nie ma po co się spieszyć;
-         *   - tylko rynki, dla których Keepa w ogóle ma dane (keepa_ok).
-         *
-         * Cena znaleziona na innym rynku ciągnie za sobą i walutę, i link
-         * z ASIN: inaczej człowiek otworzyłby amazon.de i nie znalazł tam tej
-         * ceny, którą widzi na karcie.
+         * Znaleziona cena niesie walutę i link swojego rynku — inaczej link
+         * prowadziłby do sklepu, w którym tej ceny nie ma.
          */
         PRICE_FALLBACK_ENABLED: true,
         PRICE_FALLBACK_DELAY_MS: 1000,
-        // Ile rynków zapasowych próbować. Więcej — dłużej i drożej w zapytaniach;
-        // w praktyce cena znajduje się w pierwszych dwóch-trzech.
-        PRICE_FALLBACK_MAX_TRIES: 5,
+        // Hamulec na wypadek, gdyby lista rynków urosła; dziś pytane są wszystkie.
+        PRICE_FALLBACK_MAX_TRIES: Infinity,
+        // Rynki spoza Europy — w przeglądzie na samym końcu.
+        PRICE_FALLBACK_LAST: ['com', 'ca'],
         PRICE_ASIN_FROM_HREF: /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/,
         PRICE_ASIN_FROM_TEXT: /\b(B[01][A-Z0-9]{8})\b/,
 
@@ -703,29 +488,20 @@ const SCRIPT_LOGS_ENABLED = false;
     };
 
     /**
-     * Domyślna konfiguracja linii (visible, color, alpha 0-100, fontSize
-     * oraz ewentualne podsekcje).
-     *
-     * ZMIANA DOMYŚLNYCH USTAWIEŃ W 9.2.0 — trzy rzeczy naraz:
-     *
-     *   linia 2 — WYŁĄCZONA. Jej treść (rozbicie na działy + suma) w całości
-     *             mieści się w nowej linii 7, tylko dużo ciszej.
-     *   linia 6 — WYŁĄCZONA. To bilans pieniężny zmiany, a przy wyłączonym
-     *             module cen nie ma z czego go złożyć: wszystkie pozycje byłyby
-     *             bez ceny, więc linia pokazywałaby same zera i „?N”.
-     *   linia 7 — WŁĄCZONA. Jedyna widoczna domyślnie.
-     */
-    /**
-     * Wartości domyślne ustawień WSPÓLNYCH dla wszystkich kart.
-     *
-     * Wydzielone z baseState (1.2.0), bo kod konfiguracji musi mieć z czym
-     * porównywać: do ciągu wchodzi tylko to, co różni się od domyślnego.
-     * Bez osobnego obiektu „domyślne” trzeba by je odgadywać z pustego stanu.
+     * Wartości domyślne ustawień wspólnych dla wszystkich kart. Osobny obiekt,
+     * bo kod ustawień porównuje z nim stan — do ciągu wchodzi tylko to, co
+     * różni się od domyślnego.
      */
     const DEFAULT_USER_CONFIG = {
         language: CONFIG.DEFAULT_LANGUAGE,
-        // Sklep Amazon: link z ASIN, rynek wykresu Keepa i waluta dziennika.
+        // Sklep Amazon: link z ASIN, rynek wykresu Keepa i waluta ceny.
         marketplace: CONFIG.DEFAULT_MARKETPLACE,
+        // Waluta, w której karta ceny i linia 6 pokazują kwoty; sumy są zawsze
+        // w euro. 'native' = bez przeliczania (karta w walucie sklepu, linia 6
+        // w euro). Domyślne 'EUR' to świadomy wyjątek od zasady „nowe
+        // domyślnie wyłączone” (decyzja autora, CLAUDE.md §3): nie dotyka
+        // sieci ani liczb, a kartę widać dopiero po włączeniu modułu cen.
+        displayCurrency: 'EUR',
         globalStatsContributionKnown: Object.keys(CONFIG.KNOWN_TAB_TYPES)
             .reduce((acc, key) => ({ ...acc, [key]: true }), {}),
         keyboardShortcuts: { INCREMENT: 'None', DECREMENT: 'None' },
@@ -734,6 +510,11 @@ const SCRIPT_LOGS_ENABLED = false;
         customTabSettings: {},
     };
 
+    /**
+     * Domyślna konfiguracja linii okna statystyk (visible, kolor, alfa 0-100,
+     * rozmiar). Widoczna jest tylko linia 7; linia 6 bez modułu cen nie ma
+     * czego sumować.
+     */
     const DEFAULT_LINE_CONFIG = {
         line1_currentTab: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line2_globalSummary: {
@@ -744,34 +525,18 @@ const SCRIPT_LOGS_ENABLED = false;
         line3_shiftInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line4_lunchInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line5_realTimeClock: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
-        // 8.4.0: suma wartości przetworzonych przedmiotów. Od 9.2.0 domyślnie
-        // wyłączona — patrz komentarz wyżej.
+        // Bilans wartości zmiany; działa tylko z modułem cen.
         line6_valueSum: { visible: false, colorHex: '#7CFFA8', alpha: 85, fontSize: 14 },
         /**
-         * LINIA 7 — TRYB ZWIĘZŁY (9.2.0).
-         *
-         * Dwie liczby oddzielone spacją i nic więcej:
-         *
-         *     17.4 28
-         *
-         * Pierwsza to bieżąca wydajność w paczkach na godzinę, zsumowana ze
-         * WSZYSTKICH kart — dokładnie ta sama liczba, która w linii 2 stoi po
-         * znaku „=”. Druga to łączna liczba zrobionych przedmiotów, czyli to,
-         * co w linii 2 jest w nawiasie na samym końcu.
-         *
-         * Bez oznaczeń, bez jednostek, bez nazw działów. Odświeżanie raz na
-         * sekundę, tak jak reszta okna.
+         * LINIA 7 — trzy liczby bez oznaczeń: tempo (paczki na godzinę,
+         * wszystkie karty), liczba zrobionych przedmiotów i procent sprzedaży,
+         * np. `17.4 28 14%`. To te same liczby, co w linii 2.
          */
-        line7_compact: { visible: true, colorHex: '#808080', alpha: 60, fontSize: 14 },
+        line7_compact: { visible: true, colorHex: '#808080', alpha: 50, fontSize: 13 },
         /**
-         * LINIA 8 — BIEŻĄCE ZADANIE (1.3.0).
-         *
-         * Nazwa procesu i JEGO własne liczby: paczki, tempo, procent sprzedaży,
-         * przepracowany czas. Linie 1, 2 i 7 pokazują całą zmianę i tak zostaje
-         * — tu stoi to, co dzieje się teraz, w procesie, przy którym człowiek
-         * siedzi w tej chwili.
-         *
-         * Domyślnie wyłączona, jak każda nowa linia (zasada 3 z CLAUDE.md).
+         * LINIA 8 — bieżące zadanie: nazwa i jego własne liczby (paczki,
+         * tempo, procent, przepracowany czas). Linie 1, 2 i 7 pokazują całą
+         * zmianę, ta — proces, przy którym człowiek siedzi teraz.
          */
         line8_taskInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 13 }
     };
@@ -782,165 +547,103 @@ const SCRIPT_LOGS_ENABLED = false;
         pageOverlayOpacity: 0,
         pageIndicatorTextVisible: false,
         /**
-         * POŁOŻENIE OKNA STATYSTYK (9.2.0: LEWY DOLNY RÓG).
-         *
-         * Puste `top` znaczy „przyklejone do dołu”, wtedy liczy się `bottom`.
-         * Po przeciągnięciu okna myszą do `top` trafia współrzędna i przyklejenie
-         * samo znika (patrz createDragger i StatsWindowRenderer.applyPosition).
-         *
-         * Ten sam wzorzec, co w karcie ceny — nie trzeba było wymyślać drugiego.
+         * Położenie okna statystyk: lewy dolny róg. Puste `top` znaczy
+         * „przyklejone do dołu” i wtedy liczy się `bottom`; po przeciągnięciu
+         * do `top` trafia współrzędna (createDragger, applyPosition).
          */
-        statsWindowPosition: { top: '', left: '20px', bottom: '0px' },
+        statsWindowPosition: { top: '', left: '20px', bottom: '8px' },
         statsWindowBgColorHex: '#ffffff',
         statsWindowBgAlpha: 0,
         priceCard: {
             /**
-             * GŁÓWNY WYŁĄCZNIK MODUŁU CEN (9.2.0) — NAJWAŻNIEJSZE POLE W PLIKU.
+             * GŁÓWNY WYŁĄCZNIK MODUŁU CEN — najważniejsze pole w pliku.
              *
-             * false = skrypt NIE DOTYKA sieci zewnętrznej. Żadnych kursów walut,
-             * żadnego wykresu Keepa, żadnego r.jina.ai, żadnego api.keepa.com.
-             * Licznik przedmiotów, zmiany, przerwy i linia 7 działają w całości
-             * — one nie potrzebują sieci nigdy.
+             * false — skrypt nie dotyka sieci zewnętrznej: żadnych kursów,
+             * wykresu Keepa, r.jina.ai ani api.keepa.com. Licznik, zmiany,
+             * przerwy i linia 7 działają w całości bez sieci.
+             * true  — kursy pobierają się raz, cena jest pytana na każdy
+             * nowy przedmiot.
              *
-             * true  = wszystko wraca: kursy pobierają się raz, a cena pytana jest
-             * na każdy nowy przedmiot.
-             *
-             * Przełącznik jest w panelu ustawień (sekcja „Moduł cen”) i tylko
-             * tam — sam z siebie nie włączy się nigdy, nawet po restarcie
-             * przeglądarki, bo wartość leży w konfiguracji karty.
-             *
-             * Zabezpieczenie jest WIELOWARSTWOWE, celowo nadmiarowo: sprawdzają
-             * je PriceCard.check(), PriceCard.resolve(), KeepaOCR.loadImage(),
-             * ValueLog.add() i FxRates.init(). Jedna zapomniana ścieżka nie
-             * wystarczy, żeby zapytanie wyszło.
+             * Włącza się wyłącznie ręcznie, w panelu. Kod ustawień tego pola
+             * nie niesie (ConfigCode.RETIRED_IDS). Sprawdzają je niezależnie
+             * PriceCard.check(), PriceCard.resolve(), PriceNet (każde wyjście
+             * do sieci), ValueLog.add() i FxRates.init() — jedna zapomniana
+             * ścieżka nie wystarczy, żeby zapytanie wyszło.
              */
             moduleEnabled: false,
             visible: true,
-            // ŹRÓDŁO CENY — jedna z trzech pozycji (8.4.0):
-            //   'ocr'   — obrazek Keepa ładuje się W TLE, jest rozpoznawany,
-            //             a na kartę trafia sama LICZBA. Domyślnie.
-            //   'graph' — pokazywać sam obrazek wykresu (zachowanie 8.2-8.3).
+            // ŹRÓDŁO CENY:
+            //   'ocr'   — obrazek Keepa ładuje się w tle i jest rozpoznawany;
+            //             na kartę trafia sama liczba. Domyślnie.
+            //   'graph' — pokazywać sam obrazek wykresu.
             //   'jina'  — zapytanie tekstowe do r.jina.ai.
-            //
-            // WAŻNE o 'ocr': tekst bierze się Z OBRAZKA, więc zapytanie do
-            // graph.keepa.com i tak jest potrzebne — obrazek po prostu nigdzie
-            // się nie pokazuje. Jeśli CSP strony tnie img-src, tryb nie działa
-            // w ogóle i karta mówi o tym wprost.
+            // 'ocr' też potrzebuje graph.keepa.com; gdy CSP strony tnie
+            // img-src, tryb nie działa i karta mówi o tym wprost.
             source: 'ocr',
-            // Prowadzić dziennik wartości przetworzonych przedmiotów.
-            // Działa tylko przy włączonym module cen — patrz ValueLog.add().
+            // Prowadzić dziennik wartości (tylko z modułem cen — ValueLog.add()).
             logValues: true,
-            // Szukać ceny w innych sklepach, jeśli w wybranym jej nie ma (8.6.0).
+            // Szukać ceny w innych sklepach, gdy w wybranym jej nie ma.
             marketFallback: true,
             showPrice: true,
             /**
-             * Cena katalogowa (RRP) albo druga seria wykresu — DRUGI wiersz ceny.
-             *
-             * 1.1.0: domyślnie wyłączona. Karta ma po włączeniu modułu pokazywać
-             * jedną linijkę z ceną i nic więcej; kto potrzebuje odniesienia,
-             * włącza to w panelu.
-             *
-             * Wyłącznik dotyczy WYŁĄCZNIE cen. Komunikat o tym, dlaczego ceny nie
-             * ma (blokada CSP, wyczerpany limit), idzie tym samym wierszem
-             * i wyłączyć się go nie da — cicha awaria wygląda jak zepsuty skrypt.
+             * Drugi wiersz ceny: cena katalogowa (RRP) albo druga seria
+             * wykresu. Wyłącznik dotyczy tylko cen — powód braku ceny (blokada
+             * CSP, limit) idzie tym wierszem zawsze, bo cicha awaria wygląda
+             * jak zepsuty skrypt.
              */
             showRrp: false,
             showGraph: true,
             /**
-             * Wiersz źródła: „keepa-ocr · 96ms”. Domyślnie wyłączony — to
-             * informacja dla kogoś, kto dobiera źródło ceny, a nie dla kogoś,
-             * kto pracuje.
-             *
-             * Jeden wyjątek zostaje widoczny zawsze: adnotacja, że cenę zdjęto
-             * z INNEGO sklepu niż wybrany. Bez niej suma zmiany niepostrzeżenie
-             * zmieszałaby waluty i witryny, a przy dwóch rynkach w euro nie
-             * widać tego nawet po samej kwocie.
+             * Wiersz źródła („keepa-ocr · 96ms”) — informacja dla kogoś, kto
+             * dobiera źródło ceny. Adnotacja, że cenę wzięto z innego sklepu,
+             * pokazuje się zawsze: bez niej przy dwóch rynkach w euro nie widać
+             * różnicy nawet po kwocie.
              */
             showSource: false,
             /**
-             * CO POKAZAĆ W SAMEJ KARCIE — te same klocki, co przy liniach okna
-             * statystyk: wyłącznik na każdy element osobno.
-             *
-             * showAsin       — wiersz z kodem produktu (od 1.1.0 domyślnie
-             *                  wyłączony: to identyfikator, a nie cena);
-             * asinClickable  — czy ten kod jest linkiem do sklepu;
-             * showLatency    — ile milisekund zajęło zdobycie ceny.
+             * Wyłączniki elementów karty, jak przy liniach okna statystyk:
+             * showAsin      — wiersz z kodem produktu;
+             * asinClickable — czy kod jest linkiem do sklepu;
+             * showLatency   — czas zdobycia ceny.
              */
             showAsin: false,
             /**
-             * DOMYŚLNIE WYŁĄCZONY, I TO JEST ŚWIADOMA ZMIANA WYGLĄDU (patrz
-             * CHANGELOG).
-             *
-             * Karta jest przezroczysta dla myszy — `pointer-events:none` — żeby
-             * kliknięcia dochodziły do interfejsu T-REX. Link z kodem produktu był
-             * JEDYNYM wyjątkiem od tej zasady, czyli jedynym miejscem, w którym
-             * karta przykrywała cudzy przycisk. Skoro karta ma nie przeszkadzać,
-             * ten wyjątek włącza się ręcznie.
-             *
-             * Przy `false` kod produktu jest zwykłym tekstem: bez `href`, bez
-             * podkreślenia, bez kursora i bez `pointer-events`. Nie ma czego
-             * kliknąć ani przypadkiem, ani celowo.
+             * Karta ma `pointer-events:none`, żeby kliknięcia dochodziły do
+             * T-REX; link z kodem produktu jest jedynym miejscem, które łapie
+             * mysz i może przykryć cudzy przycisk — dlatego włącza się ręcznie.
+             * Przy `false` kod jest zwykłym tekstem: bez `href`, podkreślenia,
+             * kursora i `pointer-events`.
              */
             asinClickable: false,
-            /**
-             * Czas zdobycia ceny (np. „keepa-ocr · 96ms”). Do 1.0.0 dopisywał się
-             * ZAWSZE. To liczba dla kogoś, kto dobiera źródło ceny, a nie dla
-             * kogoś, kto pracuje — w zwykłej zmianie jest wyłącznie hałasem.
-             */
+            // Czas zdobycia ceny — liczba diagnostyczna, w pracy tylko hałas.
             showLatency: false,
-            /**
-             * Krój pisma karty — ta sama lista, co w oknie statystyk
-             * (CONFIG.FONT_FAMILY_OPTIONS). Domyślnie ten sam, co w liniach:
-             * karta ma wyglądać jak reszta interfejsu, a nie jak osobny widżet.
-             */
+            // Krój pisma z listy okna statystyk (CONFIG.FONT_FAMILY_OPTIONS):
+            // karta ma wyglądać jak reszta interfejsu.
             fontFamily: 'default',
-            // top puste = karta przyklejona do dołu; po przeciągnięciu trafia
+            // Puste top = karta przyklejona do dołu; po przeciągnięciu trafia
             // tam współrzędna i przyklejenie znika.
             position: { left: '14px', top: '' },
-            // Szerokość karty przycina wykres OD LEWEJ, nie ściskając go: przy
-            // 280px widać prawą część w naturalnej wielkości, a tam jest legenda
-            // z cenami.
+            // Szerokość przycina wykres od lewej bez ściskania: przy 280 px
+            // widać prawą część, a tam jest legenda z cenami.
             width: 280,
-            /**
-             * ROZMIAR CENY (1.0.0: 30 -> 16, 1.1.0: 16 -> 13).
-             *
-             * Trzydzieści pikseli tłustą czcionką na nieprzezroczystym tle robiło
-             * z karty najbardziej krzykliwy element ekranu — a jest to element
-             * pomocniczy. Trzynaście to dokładnie tyle, ile ma linia 7, bo karta
-             * ma teraz wyglądać jak ona: jedna szara linijka, nic więcej.
-             */
+            // Rozmiar jak w linii 7 — karta ma wyglądać jak jedna szara linijka.
             fontSize: 13,
             /**
-             * KOLOR I PRZEZROCZYSTOŚĆ WSZYSTKICH TEKSTÓW KARTY.
-             *
-             * Jedna para wartości na całą kartę — cenę, kod produktu, drugi wiersz
-             * i wiersz źródła. Domyślnie to samo, co w linii 7: szary, alfa 50%.
-             *
-             * Do 1.1.0 kolory były wpisane na sztywno i NIOSŁY STAN: zielona cena
-             * znaczyła „jest”, pomarańczowa kreska „tnie CSP”. Zostało to zdjęte
-             * świadomie i jest to wymiana, a nie strata: stan mówi teraz TEKST,
-             * który przy awarii pokazuje się zawsze, niezależnie od wyłączników.
-             * Zdanie czyta się jednoznacznie i nie wymaga od nikogo pamiętania,
-             * co znaczy pomarańczowy — a kolor stał się tym, czym jest w liniach
-             * okna statystyk: ustawieniem wyglądu.
+             * Kolor i przezroczystość wszystkich tekstów karty — jak w linii 7.
+             * Kolor jest wyłącznie wyglądem, nie niesie stanu: stan (brak ceny,
+             * blokada CSP) mówi tekst, który przy awarii pokazuje się zawsze.
              */
             colorHex: '#808080',
             alpha: 50,
-            // Tryb wyświetlania wykresu Keepa:
+            // Tryb wykresu Keepa:
             //   'legend' — tylko blok z cenami (domyślnie)
             //   'right'  — prawa część wykresu w naturalnej wielkości
             //   'full'   — cały wykres wpisany w szerokość karty
             graphMode: 'legend',
             bgColorHex: '#0a0e18',
-            /**
-             * TŁO KARTY (1.0.0: 88 -> 0, czyli przezroczyste).
-             *
-             * Nieprzezroczysty prostokąt z ramką i cieniem zasłaniał kawałek
-             * strony i wyglądał jak okno cudzej aplikacji. Przy zerowej
-             * przezroczystości znikają razem z nim ramka i cień (patrz
-             * applyStyle) — zostaje sam tekst, dokładnie jak w liniach 1-7.
-             * Komu potrzebne tło, podnosi ten suwak i wszystko wraca.
-             */
+            // Tło przezroczyste: przy zerze znikają też ramka i cień
+            // (applyStyle), zostaje sam tekst jak w liniach okna. Wyższa
+            // wartość przywraca tło, ramkę i cień.
             bgAlpha: 0,
         },
     };
@@ -989,7 +692,8 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'sold ${sold}, unsold ${unsold}, undetermined ${undet}',
             lineSettings_valueSum: 'Line 6: Processed Value Sum',
             lineSettings_compact: 'Line 7: Compact counter',
-            lineSettings_compactHint: 'Two numbers: items per hour (all tabs) and items done. Nothing else.',
+            lineSettings_compactHint: 'Three numbers: items per hour (all tabs), items done and the sales percentage. Nothing else.',
+            lineSettings_taskInfo: 'Line 8: Current task',
             priceModule_section: 'Price Module (network)',
             priceModule_enabled: 'Enable the price module',
             priceModule_hint: 'OFF by default. While it is off the script makes NO requests to the internet: no currency rates, no Keepa chart, no r.jina.ai. The item counter, shift, breaks and line 7 work without the network.',
@@ -1011,6 +715,7 @@ const SCRIPT_LOGS_ENABLED = false;
             settings_resetCountersButton: 'Reset Item Counters Only', settings_resetCountersConfirm: 'Reset item counters to zero? Appearance settings are kept.',
             newShiftDetected: 'New shift detected — item counters have been reset.',
             resetNotice_stale: 'Data from the previous shift — item counters have been reset.',
+            notice_storageFull: 'Browser storage is full — numbers on screen are correct, but will not survive a page reload (F5).',
             resetNotice_manual: 'Item counters have been reset.',
             settings_manualCounterInputLabel: 'Set count', section_general: 'General', section_currentTab: 'Current Tab Settings (${tabInstanceId})',
             section_visualAids: 'Page Visual Aids (for ${tabName})', section_statsWindow: 'Statistics Window Styling',
@@ -1035,7 +740,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_fallbackHint: 'One item at a time, random order, 1s apart. The default store is not changed.',
             priceCard_searchingOther: 'searching other stores…',
             priceCard_foundIn: 'found on ${host}',
-            priceCard_marketNoKeepa: 'Keepa has no chart for this store — link works, price will not',
+            priceCard_marketNoData: 'Keepa has no chart for this store — link works, price will not',
+            priceCard_displayCurrency: 'Show amounts in',
+            priceCard_displayNative: 'store currency (no conversion)',
+            priceCard_displayCurrencyHint: 'Totals are always counted in euro; the chosen currency is only how they are shown, so switching it mid-shift loses nothing. A converted price is marked with ≈.',
             priceCard_openHint: 'Click the ASIN to open the product page',
             priceCard_hiddenHint: 'Card hidden — price is still read and added to the sum',
             priceCard_showCard: 'Show the card on screen',
@@ -1050,7 +758,7 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_cacheAge: '${days}d ago',
             priceCard_graphMode: 'Chart area', priceCard_mode_legend: 'Prices only (from chart)',
             priceCard_mode_right: 'Right part, actual size', priceCard_mode_full: 'Whole chart',
-            priceCard_jinaOff: 'text lookup off',
+            priceCard_textOff: 'text lookup off',
             priceCard_section: 'Price Card', priceCard_enabled: 'Show price card',
             priceCard_showPrice: 'Show current price', priceCard_showRrp: 'Show list price (RRP)',
             priceCard_showGraph: 'Show Keepa chart',
@@ -1065,6 +773,7 @@ const SCRIPT_LOGS_ENABLED = false;
             configCode_hint: 'The code holds everything you changed away from the defaults: lines, colours, transparency, sizes, position, switches. Paste it on another machine and you get the same interface.',
             configCode_yours: 'Your code',
             configCode_link: 'Ready-made bookmarklet',
+            configCode_linkMissing: 'This build has no release address, so there is no ready-made bookmarklet. The code above works as usual: paste it on another machine.',
             configCode_select: 'Select for copying',
             configCode_paste: 'Paste a code here',
             configCode_apply: 'Apply code',
@@ -1113,7 +822,8 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'sprzedane ${sold}, niesprzedane ${unsold}, nieokreślone ${undet}',
             lineSettings_valueSum: 'Linia 6: Suma wartości',
             lineSettings_compact: 'Linia 7: Licznik zwięzły',
-            lineSettings_compactHint: 'Dwie liczby: paczki na godzinę (wszystkie karty) i zrobione sztuki. Nic więcej.',
+            lineSettings_compactHint: 'Trzy liczby: paczki na godzinę (wszystkie karty), zrobione sztuki i procent sprzedaży. Nic więcej.',
+            lineSettings_taskInfo: 'Linia 8: Bieżące zadanie',
             priceModule_section: 'Moduł cen (sieć)',
             priceModule_enabled: 'Włącz moduł cen',
             priceModule_hint: 'Domyślnie WYŁĄCZONY. Póki jest wyłączony, skrypt nie wysyła ŻADNYCH zapytań do internetu: ani po kursy walut, ani po wykres Keepa, ani do r.jina.ai. Licznik przedmiotów, zmiana, przerwy i linia 7 działają bez sieci.',
@@ -1135,6 +845,7 @@ const SCRIPT_LOGS_ENABLED = false;
             settings_resetCountersButton: 'Zresetuj Tylko Liczniki', settings_resetCountersConfirm: 'Wyzerować liczniki przedmiotów? Ustawienia wyglądu zostaną zachowane.',
             newShiftDetected: 'Wykryto nową zmianę — liczniki przedmiotów zostały wyzerowane.',
             resetNotice_stale: 'Dane z poprzedniej zmiany — liczniki przedmiotów wyzerowane.',
+            notice_storageFull: 'Pamięć przeglądarki jest pełna — liczby na ekranie są aktualne, ale nie przeżyją przeładowania strony (F5).',
             resetNotice_manual: 'Liczniki przedmiotów zostały wyzerowane.',
             settings_manualCounterInputLabel: 'Ustaw licznik', section_general: 'Ogólne', section_currentTab: 'Ustawienia Bieżącej Karty (${tabInstanceId})',
             section_visualAids: 'Pomoce Wizualne (dla ${tabName})', section_statsWindow: 'Stylizacja Okna Statystyk', section_globalStats: 'Statystyki Globalne',
@@ -1157,7 +868,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_fallbackHint: 'Tylko dla jednego przedmiotu, losowo, co 1 s. Domyślny sklep nie zmienia się.',
             priceCard_searchingOther: 'szukam w innych sklepach…',
             priceCard_foundIn: 'znaleziono na ${host}',
-            priceCard_marketNoKeepa: 'Keepa nie ma wykresu dla tego sklepu — link działa, ceny nie będzie',
+            priceCard_marketNoData: 'Keepa nie ma wykresu dla tego sklepu — link działa, ceny nie będzie',
+            priceCard_displayCurrency: 'Kwoty pokazywać w',
+            priceCard_displayNative: 'walucie sklepu (bez przeliczania)',
+            priceCard_displayCurrencyHint: 'Sumy liczone są zawsze w euro, a wybrana waluta to tylko sposób pokazania — zmiana w trakcie zmiany niczego nie gubi. Cena przeliczona ma znak ≈.',
             priceCard_openHint: 'Kliknij ASIN, aby otworzyć stronę produktu',
             priceCard_hiddenHint: 'Karta ukryta — cena nadal jest odczytywana i wliczana do sumy',
             priceCard_showCard: 'Pokazuj kartę na ekranie',
@@ -1172,7 +886,7 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_cacheAge: '${days}d temu',
             priceCard_graphMode: 'Obszar wykresu', priceCard_mode_legend: 'Tylko ceny (z wykresu)',
             priceCard_mode_right: 'Prawa część, rozmiar oryginalny', priceCard_mode_full: 'Cały wykres',
-            priceCard_jinaOff: 'pobieranie tekstu wyłączone',
+            priceCard_textOff: 'pobieranie tekstu wyłączone',
             priceCard_section: 'Karta ceny', priceCard_enabled: 'Pokaż kartę ceny',
             priceCard_showPrice: 'Pokaż aktualną cenę', priceCard_showRrp: 'Pokaż cenę katalogową (RRP)',
             priceCard_showGraph: 'Pokaż wykres Keepa',
@@ -1187,6 +901,7 @@ const SCRIPT_LOGS_ENABLED = false;
             configCode_hint: 'W kodzie siedzi wszystko, co zmieniłeś względem wartości domyślnych: linie, kolory, przezroczystość, rozmiary, położenie, wyłączniki. Wklejony na innej maszynie daje ten sam interfejs.',
             configCode_yours: 'Twój kod',
             configCode_link: 'Gotowa zakładka',
+            configCode_linkMissing: 'Ta kompilacja nie ma adresu wydania, więc gotowej zakładki nie ma. Kod powyżej działa jak zwykle: wklej go na innej maszynie.',
             configCode_select: 'Zaznacz do skopiowania',
             configCode_paste: 'Wklej tu kod',
             configCode_apply: 'Nałóż kod',
@@ -1235,7 +950,8 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'продано ${sold}, непродано ${unsold}, не определено ${undet}',
             lineSettings_valueSum: 'Строка 6: Сумма стоимости',
             lineSettings_compact: 'Строка 7: Компактный счётчик',
-            lineSettings_compactHint: 'Два числа: предметов в час (все вкладки) и сделано штук. Больше ничего.',
+            lineSettings_compactHint: 'Три числа: предметов в час (все вкладки), сделано штук и процент продажи. Больше ничего.',
+            lineSettings_taskInfo: 'Строка 8: Текущая задача',
             priceModule_section: 'Модуль цен (сеть)',
             priceModule_enabled: 'Включить модуль цен',
             priceModule_hint: 'По умолчанию ВЫКЛЮЧЕН. Пока он выключен, скрипт не делает НИКАКИХ запросов в интернет: ни за курсами валют, ни за графиком Keepa, ни к r.jina.ai. Счётчик предметов, смена, перерывы и строка 7 работают без сети.',
@@ -1257,6 +973,7 @@ const SCRIPT_LOGS_ENABLED = false;
             settings_resetCountersButton: 'Сбросить только счётчики', settings_resetCountersConfirm: 'Обнулить счётчики предметов? Настройки внешнего вида сохранятся.',
             newShiftDetected: 'Обнаружена новая смена — счётчики предметов обнулены.',
             resetNotice_stale: 'Данные прошлой смены — счётчики предметов обнулены.',
+            notice_storageFull: 'Память браузера переполнена — числа на экране верные, но не переживут перезагрузку страницы (F5).',
             resetNotice_manual: 'Счётчики предметов обнулены.',
             settings_manualCounterInputLabel: 'Счетчик', section_general: 'Общие', section_currentTab: 'Текущая вкладка (${tabInstanceId})',
             section_visualAids: 'Визуальные эффекты (для ${tabName})', section_statsWindow: 'Стилизация окна статистики', section_globalStats: 'Глобальная статистика',
@@ -1279,7 +996,10 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_fallbackHint: 'Только для одного предмета, в случайном порядке, раз в секунду. Магазин по умолчанию не меняется.',
             priceCard_searchingOther: 'ищу в других магазинах…',
             priceCard_foundIn: 'найдено на ${host}',
-            priceCard_marketNoKeepa: 'У Keepa нет графика для этого магазина — ссылка работает, цены не будет',
+            priceCard_marketNoData: 'У Keepa нет графика для этого магазина — ссылка работает, цены не будет',
+            priceCard_displayCurrency: 'Показывать суммы в',
+            priceCard_displayNative: 'валюте магазина (без пересчёта)',
+            priceCard_displayCurrencyHint: 'Суммы всегда считаются в евро, выбранная валюта — только способ показа, поэтому смена посреди смены ничего не теряет. Пересчитанная цена помечена знаком ≈.',
             priceCard_openHint: 'Клик по ASIN открывает страницу товара',
             priceCard_hiddenHint: 'Карточка скрыта — цена всё равно читается и идёт в сумму',
             priceCard_showCard: 'Показывать карточку на экране',
@@ -1294,7 +1014,7 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_cacheAge: '${days} сут. назад',
             priceCard_graphMode: 'Область графика', priceCard_mode_legend: 'Только цены (с графика)',
             priceCard_mode_right: 'Правая часть, натуральный размер', priceCard_mode_full: 'Весь график',
-            priceCard_jinaOff: 'текстовый запрос выключен',
+            priceCard_textOff: 'текстовый запрос выключен',
             priceCard_section: 'Карточка цены', priceCard_enabled: 'Показывать карточку цены',
             priceCard_showPrice: 'Показывать текущую цену', priceCard_showRrp: 'Показывать RRP',
             priceCard_showGraph: 'Показывать график Keepa',
@@ -1309,6 +1029,7 @@ const SCRIPT_LOGS_ENABLED = false;
             configCode_hint: 'В коде лежит всё, что вы изменили относительно значений по умолчанию: строки, цвета, прозрачность, размеры, положение, выключатели. Вставленный на другой машине даёт тот же интерфейс.',
             configCode_yours: 'Ваш код',
             configCode_link: 'Готовая закладка',
+            configCode_linkMissing: 'В этой сборке не задан адрес релиза, поэтому готовой закладки нет. Код выше работает как обычно: вставьте его на другой машине.',
             configCode_select: 'Выделить для копирования',
             configCode_paste: 'Вставьте сюда код',
             configCode_apply: 'Применить код',
@@ -1329,20 +1050,15 @@ const SCRIPT_LOGS_ENABLED = false;
     // ==========================================
     const Utils = {
         /**
-         * TRZY POZIOMY WYPISYWANIA (9.2.0) — i to nie jest ozdoba.
+         * Trzy poziomy wypisywania:
+         *   log()   — dziennik pracy, kilka linii na przedmiot; pod wyłącznikiem.
+         *   error() — sytuacja nienormalna, po której skrypt działa dalej
+         *             (brak kursów, pełny dziennik, CSP); pod wyłącznikiem.
+         *   fatal() — skrypt nie wstał albo się rozsypał; zawsze, bo cicha
+         *             awaria startu wygląda jak „nic się nie stało”.
          *
-         *   log()   — dziennik pracy. Idzie kilka linii NA KAŻDY przedmiot,
-         *             więc przez zmianę to tysiące wpisów. Domyślnie wyłączony.
-         *   error() — sytuacje nienormalne, ale takie, po których skrypt działa
-         *             dalej (kursy nie przyszły, dziennik przepełniony, CSP
-         *             tnie źródło). Też podlega wyłącznikowi: to informacja dla
-         *             kogoś, kto akurat patrzy w konsolę, a nie dla nikogo.
-         *   fatal() — skrypt NIE WSTAŁ albo się rozsypał. Wypisuje się ZAWSZE,
-         *             bo cicha awaria startu wygląda jak „nic się nie stało”.
-         *
-         * Sprawdzenie idzie przez CONFIG.DEBUG_MODE, a nie przez stałą z góry
-         * pliku, bo SH.logsOn() musi działać w locie — inaczej trzeba by
-         * przewklejać skrypt w środku zmiany i zerować liczniki.
+         * Wyłącznikiem jest CONFIG.DEBUG_MODE, a nie stała z nagłówka, żeby
+         * SH.logsOn() działało w locie, bez ponownego wklejania skryptu.
          */
         log(...args) { if (CONFIG.DEBUG_MODE) console.log(`[${CONFIG.SCRIPT_NAME} v${CONFIG.SCRIPT_VERSION}]`, ...args); },
         error(...args) { if (CONFIG.DEBUG_MODE) console.error(`[${CONFIG.SCRIPT_NAME} ERROR]`, ...args); },
@@ -1350,31 +1066,15 @@ const SCRIPT_LOGS_ENABLED = false;
         generateId(prefix = '') { return `${prefix}${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`; },
         isObject(item) { return (item && typeof item === 'object' && !Array.isArray(item)); },
         /**
-         * Scalanie z GŁĘBOKIM kopiowaniem zagnieżdżonych obiektów.
+         * Scalanie z głębokim kopiowaniem. Zagnieżdżone obiekty źródła są
+         * zawsze kopiowane, także gdy klucza w target nie ma — referencja
+         * oznaczałaby, że stan w pamięci i DEFAULT_LOCAL_CONFIG dzielą jeden
+         * obiekt, a zmiana stanu psuje wartości domyślne (np. reset pozycji
+         * karty przywraca już zmienioną pozycję).
          *
-         * 8.3.0 — kluczowa poprawka. Wcześniej gałąź „klucza nie ma w target”
-         * robiła `Object.assign(output, { [key]: source[key] })`, czyli kładła
-         * do stanu REFERENCJĘ do obiektu źródła. Przy `deepMerge({}, DEFAULT_LOCAL_CONFIG)`
-         * target jest pusty, więc WSZYSTKIE zagnieżdżone bloki — linesConfig,
-         * statsWindowPosition, priceCard — były jednym i tym samym obiektem
-         * naraz w trzech miejscach.
-         *
-         * Skutek łapany ręcznie: przeciągnięto kartę ceny — nowa pozycja
-         * zapisała się do wspólnego obiektu, czyli do SAMEGO DEFAULT_LOCAL_CONFIG,
-         * — a przycisk „Zresetuj pozycję karty”, który robi
-         * `{ ...DEFAULT_LOCAL_CONFIG.priceCard.position }`, posłusznie
-         * przywracał już zepsutą wartość. Przycisk nie działał.
-         *
-         * Łapało się to tylko przy PIERWSZYM uruchomieniu na czystej
-         * przeglądarce: za drugim razem loadAll() znajdował zapisaną
-         * konfigurację, klucz był już w target, szła druga gałąź — i alias
-         * rwał się sam.
-         *
-         * BEZPIECZEŃSTWO (9.2.0): klucze `__proto__`, `constructor`
-         * i `prototype` są tu jawnie pomijane. Do scalania trafia JSON
-         * z localStorage, a localStorage tej domeny dzielimy z samą aplikacją
-         * TREX — spreparowana wartość mogłaby inaczej dopisać pole do
-         * Object.prototype i zatruć każdy obiekt na stronie.
+         * Klucze `__proto__`, `constructor` i `prototype` są pomijane: do
+         * scalania trafia JSON z localStorage, który dzielimy z T-REX,
+         * a spreparowana wartość mogłaby dopisać pole do Object.prototype.
          */
         UNSAFE_KEYS: ['__proto__', 'constructor', 'prototype'],
         deepMerge(target, source) {
@@ -1383,31 +1083,85 @@ const SCRIPT_LOGS_ENABLED = false;
                 Object.keys(source).forEach(key => {
                     if (Utils.UNSAFE_KEYS.includes(key)) return;
                     if (Utils.isObject(source[key])) {
-                        // Kopiujemy ZAWSZE — także wtedy, gdy klucza w target jeszcze nie ma.
+                        // Kopia zawsze — także wtedy, gdy klucza w target jeszcze nie ma.
                         output[key] = Utils.deepMerge(output[key], source[key]);
                     } else { output[key] = source[key]; }
                 });
             }
             return output;
         },
+        /**
+         * Różnice między dwoma stanami ustawień: lista [ścieżka, nowa wartość]
+         * dla każdego zmienionego liścia (undefined = klucz zniknął). Tablice
+         * i wartości proste są liśćmi.
+         *
+         * Podstawa scalania ustawień wspólnych: karta nakłada na magazyn tylko
+         * to, co sama zmieniła od ostatniej synchronizacji, zamiast pisać cały
+         * obiekt z pamięci i wymazywać zmiany sąsiedniej karty.
+         */
+        diffPaths(base, current, prefix = [], out = []) {
+            if (Utils.isObject(base) && Utils.isObject(current)) {
+                const keys = new Set([...Object.keys(base), ...Object.keys(current)]);
+                for (const key of keys) {
+                    if (Utils.UNSAFE_KEYS.includes(key)) continue;
+                    Utils.diffPaths(base[key], current[key], prefix.concat(key), out);
+                }
+            } else if (JSON.stringify(base) !== JSON.stringify(current)) {
+                out.push([prefix, current]);
+            }
+            return out;
+        },
+        /** Nałożenie różnic z diffPaths na obiekt — w miejscu; zwraca ten obiekt. */
+        applyPaths(target, changes) {
+            for (const [path, value] of changes) {
+                if (!path.length || path.some(k => Utils.UNSAFE_KEYS.includes(k))) continue;
+                let node = target;
+                for (const key of path.slice(0, -1)) {
+                    if (!Utils.isObject(node[key])) node[key] = {};
+                    node = node[key];
+                }
+                const last = path[path.length - 1];
+                if (value === undefined) delete node[last];
+                // Kopia, a nie referencja: stan w pamięci nie może dzielić
+                // obiektów z tym, co idzie do magazynu.
+                else node[last] = value !== null && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+            }
+            return target;
+        },
         /** Głęboka kopia bloku ustawień. */
         clone(value) { return Utils.isObject(value) ? Utils.deepMerge({}, value) : value; },
+        /**
+         * Odłożenie wywołania do chwili, gdy przez `delay` ms nic się nie działo.
+         *
+         * `.cancel()` gasi czekające wywołanie (rozbiórka egzemplarza nie może
+         * po sekundzie nadpisać magazynu starym stanem), `.flush()` wykonuje je
+         * od razu (zamknięcie karty nie może zgubić ostatniej zmiany).
+         */
         debounce(func, delay) {
-            let timeout;
-            return function(...args) {
-                clearTimeout(timeout);
-                timeout = setTimeout(() => func.apply(this, args), delay);
+            let timeout = null;
+            let pending = null;
+            const run = () => {
+                const call = pending;
+                timeout = pending = null;
+                if (call) func.apply(call.self, call.args);
             };
+            /** @this {unknown} — wywołujący; przekazywany dalej do func. */
+            const debounced = function(...args) {
+                clearTimeout(timeout);
+                pending = { self: this, args };
+                timeout = setTimeout(run, delay);
+            };
+            debounced.cancel = () => { clearTimeout(timeout); timeout = pending = null; };
+            debounced.flush = () => { clearTimeout(timeout); run(); };
+            return debounced;
         },
         /**
-         * Kolor HEX na trójkę „R, G, B” gotową do wstawienia w rgba().
+         * Kolor HEX na „R, G, B” do wstawienia w rgba().
          *
-         * Regexp jest KOTWICZONY z obu stron celowo i to jest zabezpieczenie,
-         * a nie kosmetyka: wynik trafia prosto do łańcucha CSS budowanego
-         * w CSSManager. Gdyby wzorzec dopuszczał cokolwiek poza sześcioma
-         * cyframi szesnastkowymi, wartość z zapisanej konfiguracji mogłaby
-         * zamknąć regułę i dopisać własne — czyli wstrzyknąć CSS. Przy
-         * niedopasowaniu wracamy do neutralnej szarości.
+         * Wyrażenie jest zakotwiczone z obu stron, bo wynik trafia wprost do
+         * łańcucha CSS (CSSManager): cokolwiek poza sześcioma cyframi
+         * szesnastkowymi mogłoby zamknąć regułę i dopisać własną. Przy
+         * niedopasowaniu — neutralna szarość.
          */
         hexToRgb(hex) {
             const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -1430,7 +1184,9 @@ const SCRIPT_LOGS_ENABLED = false;
             return d;
         },
         formatDuration(ms) {
-            if (isNaN(ms) || ms <= 0) return I18n.get('notApplicable');
+            // Number.isFinite, a nie isNaN: nieskończoność przechodzi przez
+            // isNaN i dałaby na ekranie „Infinityg NaNm”.
+            if (!Number.isFinite(ms) || ms <= 0) return I18n.get('notApplicable');
             let s = Math.floor(ms / 1000); let m = Math.floor(s / 60); const h = Math.floor(m / 60);
             s %= 60; m %= 60;
             const hS = I18n.get('hoursShort'), mS = I18n.get('minutesShort'), sS = I18n.get('secondsShort');
@@ -1439,11 +1195,8 @@ const SCRIPT_LOGS_ENABLED = false;
             return `${s}${sS}`;
         },
         /**
-         * Godzina i minuta ze znacznika czasu — `18:32`.
-         *
-         * Do podsumowań zadań, gdzie liczy się sama pora, a nie data: zadanie
-         * mieści się w jednej zmianie, więc dzień jest oczywisty, a doklejanie
-         * go zjadałoby szerokość wąskiej kolumny panelu.
+         * Godzina i minuta ze znacznika czasu — `18:32`. Bez daty: zadanie
+         * mieści się w jednej zmianie, a kolumna panelu jest wąska.
          */
         formatClock(ms) {
             const d = new Date(Number(ms));
@@ -1451,35 +1204,24 @@ const SCRIPT_LOGS_ENABLED = false;
             return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
         },
         /**
-         * Liczba z konfiguracji sprowadzona do bezpiecznego zakresu (9.2.0).
+         * Udział w procentach, z odrzuceniem części ułamkowej.
          *
-         * Konfiguracja przychodzi z localStorage, czyli z miejsca, którego nie
-         * kontrolujemy w całości. Rozmiar czcionki albo alfa wzięte stamtąd
-         * wprost lądują w łańcuchu CSS; NaN albo `10px; position:fixed`
-         * rozjechałyby regułę. Dlatego każda liczba idąca do stylu przechodzi
-         * tędy.
-         */
-        /**
-         * Udział całkowity w procentach, z ODRZUCENIEM części ułamkowej.
-         *
-         * Odrzucenie, a nie zaokrąglenie, i to jest decyzja, a nie skrót: procent
-         * sprzedaży ma nie obiecywać więcej, niż zrobiono. Jeden przedmiot z 17 to
-         * 5,88%, a na ekranie ma stać 5% — zaokrąglone 6% wyglądałoby jak wynik
-         * lepszy od prawdziwego.
-         *
-         * MNOŻENIE IDZIE PRZED DZIELENIEM i to nie jest kosmetyka. `(29/100)*100`
-         * daje w arytmetyce zmiennoprzecinkowej 28.999999999999996, więc odrzucenie
-         * części ułamkowej dałoby 28% zamiast 29%. `29*100/100` jest dokładne.
-         *
-         * Zakres jest zamknięty w 0-100 nawet wtedy, gdy dane są niespójne:
-         * licznik da się poprawić ręcznie w dół, a licznik sprzedanych nie —
-         * bez tego ograniczenia dałoby się zobaczyć 150%.
+         * Odrzucenie, a nie zaokrąglenie: procent sprzedaży nie może obiecywać
+         * więcej, niż zrobiono (1 z 17 to 5,88% — na ekranie 5%, nie 6%).
+         * Mnożenie idzie przed dzieleniem, bo `(29/100)*100` daje
+         * 28.999999999999996. Wynik zamknięty w 0-100 także przy danych
+         * niespójnych (licznik poprawiony ręcznie w dół, sprzedane nie).
          */
         percentFloor(part, whole) {
             const p = Number(part), w = Number(whole);
             if (!isFinite(p) || !isFinite(w) || w <= 0 || p <= 0) return 0;
             return Math.max(0, Math.min(100, Math.floor(p * 100 / w)));
         },
+        /**
+         * Liczba z konfiguracji sprowadzona do zakresu; NaN i śmieci dają
+         * `fallback`. Każda liczba idąca do stylu przechodzi tędy — wartość
+         * z localStorage w rodzaju `10px; position:fixed` rozjechałaby regułę CSS.
+         */
         clampNum(value, min, max, fallback) {
             const n = Number(value);
             if (!isFinite(n)) return fallback;
@@ -1490,11 +1232,10 @@ const SCRIPT_LOGS_ENABLED = false;
     /**
      * Generator DOM w stylu hyperscript.
      *
-     * Znaczników NIE składa się z łańcuchów: atrybuty i właściwości ustawia się
-     * przez przypisanie, tekst — wyłącznie przez document.createTextNode. Tekst
-     * z zewnątrz nigdy więc nie trafia do parsera HTML, czyli XSS jest wykluczony
-     * konstrukcyjnie. To jest główna gwarancja bezpieczeństwa całego interfejsu
-     * i dlatego w całym pliku nie ma ani jednego przypisania do innerHTML poza
+     * Znaczniki nie powstają z łańcuchów: atrybuty i właściwości ustawia się
+     * przypisaniem, tekst wyłącznie przez document.createTextNode. Tekst
+     * z zewnątrz nigdy nie trafia do parsera HTML, więc XSS jest wykluczony
+     * konstrukcyjnie — dlatego w pliku nie ma przypisania do innerHTML poza
      * czyszczeniem (`= ''`).
      */
     function h(tag, props = {}, ...children) {
@@ -1545,23 +1286,19 @@ const SCRIPT_LOGS_ENABLED = false;
                 try { cb(payload); } catch (e) { Utils.error(`Event handler error for ${event}`, e); }
             });
         }
-        /** Zdejmuje wszystkie subskrypcje. Potrzebne przy awaryjnym rozbiórce (Main.teardown). */
+        /** Zdejmuje wszystkie subskrypcje — przy rozbiórce egzemplarza (Main.teardown). */
         clear() { this.listeners = {}; }
     }
 
     const bus = new EventBus();
 
     /**
-     * Subskrypcja zmian stanu PO GAŁĘZIACH (8.3.0).
+     * Subskrypcja zmian stanu ograniczona do gałęzi (`prefixes`).
      *
-     * W 8.2.0 na gołym `store:changed` wisiało pięć procedur: przebudowa CSS,
-     * render okna statystyk, nakładka, przerysowanie karty ceny i autozapis.
-     * Żadna nie patrzyła na ścieżkę, więc każdy drobiazg ciągnął za sobą
-     * wszystko naraz. Najbardziej biło to po uiFlags: AutoTrigger.scan() rusza
-     * itemInProgress i autoTriggerFound na każdym przedmiocie, a każda taka
-     * flaga wywoływała pełną przebudowę łańcucha CSS z podmianą textContent
-     * w <style> — czyli unieważnienie stylów całego dokumentu — plus pełny
-     * re-render statystyk i karty ceny.
+     * Obsługa na gołym `store:changed` reagowałaby na każdą zmianę, także na
+     * flagi uiFlags przestawiane przy każdym przedmiocie — a przebudowa CSS
+     * unieważnia style całego dokumentu. Każdy odbiorca słucha więc tylko
+     * swoich ścieżek.
      */
     function onStorePaths(prefixes, handler) {
         return bus.on('store:changed', ({ path }) => {
@@ -1584,6 +1321,10 @@ const SCRIPT_LOGS_ENABLED = false;
                 return obj[prop];
             },
             set(obj, prop, value) {
+                // Klucz symboliczny (np. Symbol.toStringTag dopisany przez
+                // bibliotekę) nie jest ścieżką stanu: zapis bez zdarzeń.
+                // Wstawiony do napisu ścieżki rzuciłby TypeError.
+                if (typeof prop === 'symbol') { obj[prop] = value; return true; }
                 const fullPath = path ? `${path}.${prop}` : prop;
                 const oldValue = obj[prop];
 
@@ -1599,10 +1340,10 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
                 return true;
             },
-            // 8.1.0: usunięcie klucza też jest reaktywne. Potrzebne do zbierania
-            // śmieci po kartach (SessionReset.pruneTabInstances) — wcześniej
-            // delete przechodził obok magistrali i UI się nie przerysowywał.
+            // Usunięcie klucza też jest reaktywne — na nim stoi sprzątanie
+            // wpisów po kartach (SessionReset.pruneTabInstances).
             deleteProperty(obj, prop) {
+                if (typeof prop === 'symbol') return delete obj[prop];
                 if (!(prop in obj)) return true;
                 const fullPath = path ? `${path}.${prop}` : prop;
                 const oldValue = obj[prop];
@@ -1614,38 +1355,38 @@ const SCRIPT_LOGS_ENABLED = false;
         });
     }
 
-    // Definicja podstawowej struktury stanu
+    /**
+     * Stan zmiany — wspólny dla wszystkich kart. Osobny obiekt, bo scalanie
+     * ustawień między kartami uzupełnia nim pola, których brakuje w magazynie
+     * (Persistence._adoptShared).
+     */
+    const DEFAULT_SESSION_CONFIG = {
+        shiftType: null, shiftCalculatedStartTime: null, selectedLunchIndex: null, activeTabInstances: {},
+    };
+
     const baseState = {
         initialized: false,
         currentTabType: CONFIG.UNKNOWN_TAB_TYPE_KEY,
         currentTabInstanceId: null,
         tabCounters: {},
-        // Ile z policzonych przedmiotów pojechało na sprzedaż — na każdą kartę
-        // osobno, tak samo jak tabCounters. Mianownikiem procentu jest tabCounters.
+        // Ile z policzonych przedmiotów pojechało na sprzedaż — na kartę,
+        // jak tabCounters. Mianownikiem procentu jest tabCounters.
         tabSold: {},
         // Przedmioty wyjęte z mianownika procentu (audyt, ręczne wpisy) — patrz
         // Routing i TaskManager.
         tabNeutral: {},
         /**
-         * ZADANIA (1.3.0). Lista jest zwykłą tablicą, więc NIE jest reaktywna
-         * po elementach — TaskManager podmienia ją w całości przy każdej
-         * zmianie i tylko dzięki temu linia 8 oraz panel dowiadują się o niej.
+         * Zadania. Tablica nie jest reaktywna po elementach — TaskManager
+         * podmienia ją w całości przy każdej zmianie i dzięki temu linia 8
+         * oraz panel dowiadują się o niej.
          */
         tasks: [],
         activeTaskId: null,
         taskCounters: {},
-        // 8.3.0: usunięte pole defaultLocalTabConfig — nikt go nigdy nie czytał,
-        // a w całości dublowało się w localStorage przy każdym zapisie.
-        // 1.2.0: wartości przeniesione do DEFAULT_USER_CONFIG, bo kod konfiguracji
-        // musi mieć z czym porównywać bieżący stan.
         userConfig: Utils.deepMerge({}, DEFAULT_USER_CONFIG),
         localTabConfig: Utils.deepMerge({}, DEFAULT_LOCAL_CONFIG),
-        sessionConfig: {
-            // 8.3.0: usunięte sessionLastActivityTimestamp — zadeklarowane
-            // w 8.0.0, nigdzie nieczytane i niezapisywane.
-            shiftType: null, shiftCalculatedStartTime: null, selectedLunchIndex: null, activeTabInstances: {},
-        },
-        // itemInProgress zadeklarowany jawnie (w 8.0.0 powstawał w locie z AutoTrigger.scan)
+        sessionConfig: Utils.deepMerge({}, DEFAULT_SESSION_CONFIG),
+        // itemInProgress: trwa przedmiot (między wyzwalaczem wstępnym a końcowym).
         uiFlags: { isSettingsPanelVisible: false, isStatsWindowDragging: false, isPriceCardDragging: false,
                    autoTriggerFound: false, itemInProgress: false }
     };
@@ -1653,12 +1394,10 @@ const SCRIPT_LOGS_ENABLED = false;
     const store = createReactive(baseState);
 
     /**
-     * CZY MODUŁ CEN JEST WŁĄCZONY (9.2.0).
-     *
-     * Jedno miejsce prawdy dla wszystkich bezpieczników sieciowych. Świadomie
-     * porównanie do `true`, a nie zwykła prawdziwość: wartość przychodzi
-     * z localStorage, a wszystko, co nie jest jawnym `true` (brak pola, `null`,
-     * łańcuch, liczba), ma znaczyć WYŁĄCZONE.
+     * Czy moduł cen jest włączony — jedno miejsce prawdy dla wszystkich
+     * bezpieczników sieciowych. Porównanie do `true`, a nie prawdziwość:
+     * wartość przychodzi z localStorage i wszystko inne niż jawne `true`
+     * (brak pola, `null`, łańcuch, liczba) znaczy „wyłączony”.
      */
     function priceModuleOn() {
         return store.localTabConfig
@@ -1677,11 +1416,10 @@ const SCRIPT_LOGS_ENABLED = false;
             const pack = LANG_STRINGS[lang] || LANG_STRINGS[CONFIG.DEFAULT_LANGUAGE];
             let str = pack[key] !== undefined ? pack[key] : LANG_STRINGS[CONFIG.DEFAULT_LANGUAGE][key];
             if (!str) return `[${key}]`;
-            // 8.3.0: podstawianie przez split/join, a nie przez String.replace.
-            // Łańcuch ZASTĘPUJĄCY w replace traktuje $& $` $' $1 jako sekwencje
-            // specjalne, więc nazwa karty typu "Tab ($&)" psuła wynik. To także
-            // kwestia bezpieczeństwa: nazwę karty wpisuje człowiek, a więc jest
-            // to dane wejściowe, nad którym parser nie powinien mieć władzy.
+            // Podstawianie przez split/join, a nie String.replace: w łańcuchu
+            // zastępującym replace traktuje $& $` $' $1 jako sekwencje
+            // specjalne, a nazwę karty wpisuje człowiek — „Tab ($&)” psułaby
+            // wynik.
             const put = (text, name, value) => text.split('${' + name + '}').join(String(value));
             for (const r in replacements) str = put(str, r, replacements[r]);
             return put(put(str, 'version', CONFIG.SCRIPT_VERSION), 'scriptName', CONFIG.SCRIPT_NAME);
@@ -1697,7 +1435,14 @@ const SCRIPT_LOGS_ENABLED = false;
     };
 
     // ─── src/06-storage.js ───
-    const StorageManager = {
+    /**
+     * Zapis i odczyt stanu skryptu w localStorage.
+     *
+     * Nazwa nie może brzmieć StorageManager: tak nazywa się globalny typ
+     * przeglądarki (navigator.storage), a sprawdzanie typów widzi wszystkie
+     * moduły w jednym zakresie razem z typami DOM.
+     */
+    const Persistence = {
         // Pamięć ostatniej zapisanej wartości dla każdego klucza. Potrzebna, żeby
         // nie pisać do localStorage tego samego: zbędny zapis rodzi zdarzenie
         // 'storage' w sąsiednich kartach i zmusza je do przeliczania stanu.
@@ -1708,30 +1453,17 @@ const SCRIPT_LOGS_ENABLED = false;
         getKey(key) { return `${CONFIG.SCRIPT_ID_PREFIX}${key}`; },
 
         /**
-         * Zapis z odnotowaniem wartości — JEDYNE miejsce, z którego skrypt pisze
+         * Zapis z odnotowaniem wartości — jedyne miejsce, z którego skrypt pisze
          * do localStorage poza dziennikiem wartości i kursami.
          *
-         * ZAPIS MA PRAWO NIE DOJŚĆ i to nie jest sytuacja teoretyczna:
-         * localStorage tej domeny dzielimy z samym TREX, więc kwota potrafi się
-         * skończyć nie z naszej winy. Do tego część konfiguracji przeglądarki
-         * (zablokowany magazyn dla witryny) sprawia, że setItem rzuca wyjątek
-         * przy każdym wywołaniu.
+         * Zapis może się nie udać: localStorage dzielimy z T-REX, więc kwota
+         * potrafi się skończyć, a zablokowany magazyn rzuca przy każdym
+         * setItem. Nieudany zapis nie przerywa pracy — wraca `false`, skrypt
+         * liczy dalej w pamięci, traci się tylko przeniesienie stanu przez F5.
+         * Wyjątek puszczony w górę zatrzymałby Main.init() i skrypt nie wstałby.
          *
-         * Wcześniej wyjątek szedł stąd w górę nieprzechwycony. Skutek był
-         * nieproporcjonalny do przyczyny: saveState() woła się w Main.init(),
-         * więc przy pełnym magazynie catch w init() rozbierał całość i skrypt
-         * NIE WSTAWAŁ WCALE. Licznik, który doskonale policzyłby zmianę
-         * w pamięci, nie pokazywał się na ekranie.
-         *
-         * Teraz nieudany zapis jest zdarzeniem zwykłym: wraca `false`, skrypt
-         * pracuje dalej na stanie w pamięci, a człowiek traci tylko przeniesienie
-         * liczników przez F5 — czyli dokładnie tyle, ile naprawdę zepsuł pełny
-         * magazyn.
-         *
-         * Notatka `_lastWritten` stawia się DOPIERO PO UDANYM zapisie i to jest
-         * druga połowa tej poprawki. Gdy stała przed nim, po nieudanym zapisie
-         * pamięć twierdziła, że wartość leży w magazynie, i deduplikacja
-         * odrzucała następną, już możliwą próbę zapisania tego samego.
+         * `_lastWritten` ustawia się dopiero po udanym zapisie; inaczej
+         * deduplikacja odrzuciłaby następną, już możliwą próbę tej samej wartości.
          *
          * @returns {boolean} czy wartość naprawdę trafiła do magazynu.
          */
@@ -1743,15 +1475,82 @@ const SCRIPT_LOGS_ENABLED = false;
                 delete this._lastWritten[key];
                 Utils.error(`Zapis do magazynu nie powiódł się (${key}): ${e.name}. `
                           + 'Skrypt pracuje dalej, ale stan nie przeżyje przeładowania strony.');
+                this.reportWriteFailure();
                 return false;
             }
             this._lastWritten[key] = value;
             return true;
         },
+        /**
+         * Magazyn odmówił zapisu — człowiek ma się o tym dowiedzieć.
+         *
+         * Utils.error domyślnie milczy, a ekran do końca zmiany pokazywałby
+         * poprawne liczby; rozjazd wyszedłby dopiero po F5. Cicha utrata jest
+         * gorsza niż jedno powiadomienie, więc tu reguła „skrypt milczy”
+         * ustępuje. Znacznik zostaje w pamięci, bo odmowa zdarza się także
+         * przed postawieniem interfejsu; Notifier pokazuje ją raz na stronę.
+         */
+        writeFailed: false,
+        reportWriteFailure() {
+            this.writeFailed = true;
+            bus.emit('storage:writeFailed');
+        },
+        /**
+         * USTAWIENIA WSPÓLNE DLA KART — scalanie trójstronne.
+         *
+         * `userConfig` i `sessionConfig` leżą w jednym kluczu na wszystkie
+         * karty. Karta pamięta, co ostatnio leżało w magazynie (`_synced`),
+         * i przy zapisie oraz wczytaniu przenosi tylko swoje zmiany od tamtej
+         * chwili, na wierzch tego, co jest w magazynie teraz. Zapis całego
+         * obiektu z pamięci wymazywałby zmiany sąsiedniej karty.
+         *
+         * Dwie karty zmieniające różne ustawienia nie przeszkadzają sobie; ta
+         * sama wartość zmieniona w obu wygrywa ostatnim zapisem.
+         */
+        _synced: {},
+        _mergeShared(name, raw) {
+            let stored;
+            try { stored = JSON.parse(raw || 'null'); } catch { stored = null; }
+            if (!Utils.isObject(stored)) stored = null;
+            const base = this._synced[name];
+            const mine = store[name];
+            // Bez podstawy (pierwsze wczytanie) cały stan w pamięci jest „nasz”.
+            const changes = Utils.diffPaths(base === undefined ? {} : base, mine);
+            const merged = Utils.applyPaths(stored ? JSON.parse(JSON.stringify(stored)) : {}, changes);
+            return { stored, merged, changes };
+        },
+        /**
+         * Scalony stan staje się stanem w pamięci — dokładnie, łącznie
+         * z usunięciami. deepMerge umie tylko dopisywać, więc wpis usunięty
+         * w sąsiedniej karcie zostałby tu i najbliższy zapis by go wskrzesił.
+         * Scalony stan zawiera wszystkie zmiany tej karty, więc usuwa się tylko
+         * to, co zniknęło gdzie indziej.
+         */
+        _adoptShared(name, merged) {
+            // Brakujące pola (starszy zapis, ręczna edycja) uzupełniają wartości
+            // domyślne — usunąć da się tylko wpisy bez wartości domyślnej, czyli
+            // dynamiczne (karty nierozpoznane, znaczniki kart).
+            const defaults = name === 'userConfig' ? DEFAULT_USER_CONFIG : DEFAULT_SESSION_CONFIG;
+            const full = Utils.deepMerge(Utils.deepMerge({}, defaults), merged);
+            const target = store[name];
+            for (const key of Object.keys(target)) {
+                if (!(key in full)) delete target[key];
+            }
+            Object.assign(target, full);
+        },
+        _saveShared(name, storageKey) {
+            const key = this.getKey(storageKey);
+            let raw;
+            try { raw = localStorage.getItem(key); } catch { raw = null; }
+            const { merged } = this._mergeShared(name, raw);
+            this._adoptShared(name, merged);
+            const text = JSON.stringify(merged);
+            if (this.write(key, text) || this._lastWritten[key] === text) this._synced[name] = merged;
+        },
         saveState() {
             if (!store.initialized) return;
-            this.write(this.getKey(CONFIG.STORAGE_KEY_USER_CONFIG), JSON.stringify(store.userConfig));
-            this.write(this.getKey(CONFIG.STORAGE_KEY_SESSION_CONFIG), JSON.stringify(store.sessionConfig));
+            this._saveShared('userConfig', CONFIG.STORAGE_KEY_USER_CONFIG);
+            this._saveShared('sessionConfig', CONFIG.STORAGE_KEY_SESSION_CONFIG);
 
             const allLocalsKey = this.getKey(CONFIG.STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS);
             let allLocals;
@@ -1759,21 +1558,54 @@ const SCRIPT_LOGS_ENABLED = false;
             if (store.currentTabInstanceId) {
                 allLocals[store.currentTabInstanceId] = store.localTabConfig;
             }
-            // Sprzątamy śmieciowy klucz "null", który zapisywała 8.0.0 przez to,
-            // że loadAll() szedł przed identifyTab().
+            // Klucz "null" to zapis konfiguracji sprzed rozpoznania karty —
+            // śmieć, usuwany przy każdym zapisie.
             delete allLocals['null'];
             this.write(allLocalsKey, JSON.stringify(allLocals));
         },
-        // Autozapis: każda zmiana stanu odkłada zapis o sekundę.
-        // W 8.0.0 ustawienia zapisywały się dopiero przy zamykaniu panelu, a F5
-        // w środku zmiany je gubiło.
+        // Autozapis: każda zmiana stanu odkłada zapis o sekundę, więc F5
+        // w środku zmiany nie gubi ustawień.
         scheduleSave: Utils.debounce(function() {
-            if (Date.now() < StorageManager.suppressSaveUntil) return;
-            StorageManager.saveState();
+            // Zapis w oknie ciszy po wczytaniu stanu sąsiedniej karty nie
+            // przepada — przesuwa się za koniec ciszy.
+            const wait = Persistence.suppressSaveUntil - Date.now();
+            if (wait > 0) { setTimeout(() => Persistence.scheduleSave(), wait); return; }
+            Persistence.saveState();
         }, CONFIG.AUTOSAVE_DEBOUNCE_MS),
 
         saveCounter(tabKey, count) {
             this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER + tabKey), String(count));
+        },
+        /**
+         * Świeża wartość licznika prosto z magazynu.
+         *
+         * Dwie karty tego samego działu dzielą klucz licznika. Zwiększanie od
+         * wartości z własnej pamięci gubiłoby paczkę, gdy obie zaliczą
+         * przedmiot, zanim przeglądarka doręczy zdarzenie — dlatego zwiększa
+         * się od tego, co leży w magazynie.
+         *
+         * Po odmowie zapisu magazyn stoi w miejscu — wtedy prawdą jest pamięć.
+         * Brak klucza to zero: sąsiednia karta zaczęła nową zmianę.
+         */
+        freshCount(key, fallback) {
+            if (this.writeFailed) return fallback;
+            try { return this.parseCount(localStorage.getItem(key)); } catch { return fallback; }
+        },
+        /** +1 do licznika karty (paczki, sprzedane albo poza mianownikiem). */
+        bump(prefix, memory, tabKey) {
+            const key = this.getKey(prefix + tabKey);
+            const next = this.freshCount(key, memory[tabKey] || 0) + 1;
+            memory[tabKey] = next;
+            this.write(key, String(next));
+            return next;
+        },
+        /** Świeże liczniki zadania dla karty — z tego samego powodu co freshCount. */
+        freshTaskCounter(taskId, tabKey, fallback) {
+            if (this.writeFailed) return fallback;
+            try {
+                const raw = localStorage.getItem(this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER + taskId + '_' + tabKey));
+                return this.parseTaskCounterValue(raw);
+            } catch { return fallback; }
         },
         /** Licznik sprzedanych — mianownikiem procentu jest zwykły licznik obok. */
         saveSold(tabKey, count) {
@@ -1784,13 +1616,33 @@ const SCRIPT_LOGS_ENABLED = false;
             this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL + tabKey), String(count));
         },
         /**
-         * Lista zadań i identyfikator aktywnego — jeden klucz wspólny dla
-         * wszystkich kart. Zapis jest mały (kilka zadań na zmianę), więc idzie
-         * w całości, bez różnicowania.
+         * Lista zadań i aktywne zadanie — jeden klucz wspólny dla kart. Zapis
+         * scala się z tym, co leży w magazynie (TaskManager.merge), żeby
+         * zmiany listy w dwóch kartach naraz nie wymazywały się nawzajem.
          */
         saveTasks() {
-            this.write(this.getKey(CONFIG.STORAGE_KEY_TASKS),
-                       JSON.stringify({ activeId: store.activeTaskId, list: store.tasks }));
+            const key = this.getKey(CONFIG.STORAGE_KEY_TASKS);
+            let stored;
+            try { stored = JSON.parse(localStorage.getItem(key) || 'null'); } catch { stored = null; }
+            // Czyści się tylko to, co przyszło z magazynu: własne zadania zostają
+            // tymi samymi obiektami, bo trzymają je wołający (TaskManager.active()).
+            if (stored && Array.isArray(stored.list)) stored.list = this.cleanTasks(stored.list);
+            const merged = TaskManager.merge(stored);
+            TaskManager.adopt(merged);
+            this.write(key, JSON.stringify(merged));
+        },
+        /** Klucze liczników danego zadania w magazynie — także cudzych kart. */
+        storedTaskTabs(taskId) {
+            const prefix = this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER);
+            const tabs = [];
+            try {
+                for (const key of Object.keys(localStorage)) {
+                    if (!key.startsWith(prefix)) continue;
+                    const parsed = this.parseTaskCounterKey(key.substring(CONFIG.SCRIPT_ID_PREFIX.length));
+                    if (parsed && parsed.taskId === taskId) tabs.push(parsed.tabKey);
+                }
+            } catch (e) { Utils.error('Nie udało się przejrzeć kluczy zadań', e); }
+            return tabs;
         },
         /** Liczniki jednego zadania na jednej karcie: „paczki,sprzedane,poza mianownikiem”. */
         saveTaskCounter(taskId, tabKey, c) {
@@ -1803,20 +1655,35 @@ const SCRIPT_LOGS_ENABLED = false;
             localStorage.removeItem(key);
         },
         /**
-         * Rozbiór klucza licznika zadania. Identyfikator zadania sam zawiera
-         * podkreślenia (`task_abc_def`), więc dzieli się od PRAWEJ: ostatni
-         * człon to karta, wszystko przed nim to identyfikator.
+         * Rozbiór klucza licznika zadania: `taskcnt_<zadanie>_<karta>`.
+         *
+         * Identyfikator zadania sam ma podkreślenia (`task_abc_def`), więc
+         * dzieli się od prawej: ostatni człon to karta. Wyjątkiem jest karta
+         * nierozpoznana (`unknownTabInstance_abc_def`) — też z podkreśleniami;
+         * dla niej dzieli się przed jej przedrostkiem, który w identyfikatorze
+         * zadania nie występuje. Zły podział przypisałby paczki nieistniejącemu
+         * zadaniu, a pierwsza poprawka w panelu wyzerowałaby licznik karty.
          */
         parseTaskCounterKey(localKey) {
             const rest = localKey.substring(CONFIG.STORAGE_PREFIX_TASK_COUNTER.length);
-            const cut = rest.lastIndexOf('_');
-            if (cut <= 0) return null;
+            const unknownAt = rest.indexOf('_' + CONFIG.UNKNOWN_TAB_INSTANCE_ID_PREFIX);
+            const cut = unknownAt > 0 ? unknownAt : rest.lastIndexOf('_');
+            if (cut <= 0 || cut === rest.length - 1) return null;
             return { taskId: rest.substring(0, cut), tabKey: rest.substring(cut + 1) };
+        },
+        /**
+         * Licznik z magazynu: liczba całkowita od zera do CONFIG.COUNTER_MAX.
+         * Magazyn jest wspólny z T-REX i można go edytować ręcznie — ujemne,
+         * ułamki i liczby na dwadzieścia cyfr nie mają prawa dojść do ekranu.
+         */
+        parseCount(raw) {
+            const n = parseInt(raw, 10);
+            return Number.isFinite(n) && n > 0 ? Math.min(n, CONFIG.COUNTER_MAX) : 0;
         },
         /** Wartość licznika zadania z magazynu; śmieć czyta się jako zera. */
         parseTaskCounterValue(raw) {
             const parts = String(raw == null ? '' : raw).split(',');
-            const num = (i) => Math.max(0, parseInt(parts[i], 10) || 0);
+            const num = (i) => this.parseCount(parts[i]);
             return { done: num(0), sold: num(1), neutral: num(2) };
         },
         removeCounter(tabKey) {
@@ -1825,41 +1692,44 @@ const SCRIPT_LOGS_ENABLED = false;
             localStorage.removeItem(key);
         },
         /**
-         * Wszystkie klucze localStorage należące do skryptu.
+         * Wszystkie klucze localStorage należące do skryptu, łącznie ze
+         * wspólnym prefiksem archiwum. Zwykły reset zmiany archiwum nie rusza,
+         * ale pełny reset usuwa wszystko, co skrypt zapisał.
          *
-         * 8.4.0: wchodzi tu także wspólny, nieversjonowany prefiks — archiwum
-         * podsumowań. Zwykły reset zmiany go nie rusza (w tym cały sens:
-         * archiwum żyje dziesiątki zmian), ale przycisk PEŁNEGO resetu musi
-         * usuwać wszystko, co skrypt kiedykolwiek zapisał.
-         *
-         * Filtr po dwóch prefiksach jest też zabezpieczeniem: localStorage tej
-         * domeny należy w większości do samego TREX i skrypt nie ma prawa
-         * dotknąć ani jednego cudzego klucza.
+         * Filtr po dwóch prefiksach jest też zabezpieczeniem: reszta
+         * localStorage tej domeny należy do T-REX i nie wolno jej dotknąć.
          */
         ownKeys() {
             return Object.keys(localStorage).filter(k =>
                 k.startsWith(CONFIG.SCRIPT_ID_PREFIX) || k.startsWith(CONFIG.SHARED_ID_PREFIX));
         },
         /**
-         * Klucze wspólnego magazynu po możliwościach, których już nie ma.
-         * 8.5.0: trafiła tu pamięć cen na pięć dób — została odwołana i nie ma
-         * po co, żeby wisiała w localStorage.
+         * Usuwa klucze wspólnego magazynu po funkcjach, których już nie ma
+         * (CONFIG.LEGACY_SHARED_KEYS).
+         *
+         * Sprzątanie to pierwsze wywołania w Main.init() i jedyne, które nie są
+         * potrzebne do liczenia — stąd własny try: magazyn, który odmawia
+         * nawet odczytu listy kluczy, nie może zatrzymać startu.
          */
         purgeLegacySharedKeys() {
-            (CONFIG.LEGACY_SHARED_KEYS || []).forEach(k => {
-                const full = CONFIG.SHARED_ID_PREFIX + k;
-                if (localStorage.getItem(full) !== null) {
-                    localStorage.removeItem(full);
-                    Utils.log(`Usunięto klucz odwołanej funkcji: ${full}`);
-                }
-            });
+            try {
+                (CONFIG.LEGACY_SHARED_KEYS || []).forEach(k => {
+                    const full = CONFIG.SHARED_ID_PREFIX + k;
+                    if (localStorage.getItem(full) !== null) {
+                        localStorage.removeItem(full);
+                        Utils.log(`Usunięto klucz odwołanej funkcji: ${full}`);
+                    }
+                });
+            } catch (e) { Utils.error('Sprzątanie kluczy odwołanych funkcji pominięte', e); }
         },
-        /** Czyści klucze poprzednich wersji (ważne na maszynach bez resetu sesji). */
+        /** Czyści klucze poprzednich schematów (ważne na maszynach bez resetu sesji). */
         purgeLegacyKeys() {
-            const stale = Object.keys(localStorage).filter(k =>
-                CONFIG.LEGACY_ID_PREFIXES.some(p => k.startsWith(p)));
-            stale.forEach(k => localStorage.removeItem(k));
-            if (stale.length) Utils.log(`Usunięto kluczy poprzednich wersji: ${stale.length}`);
+            try {
+                const stale = Object.keys(localStorage).filter(k =>
+                    CONFIG.LEGACY_ID_PREFIXES.some(p => k.startsWith(p)));
+                stale.forEach(k => localStorage.removeItem(k));
+                if (stale.length) Utils.log(`Usunięto kluczy poprzednich wersji: ${stale.length}`);
+            } catch (e) { Utils.error('Sprzątanie kluczy poprzednich wersji pominięte', e); }
         },
         /**
          * @param {boolean} fromRemote - true, jeśli wczytanie wywołało zdarzenie
@@ -1868,11 +1738,25 @@ const SCRIPT_LOGS_ENABLED = false;
          */
         loadAll(fromRemote = false) {
             try {
-                const uc = JSON.parse(localStorage.getItem(this.getKey(CONFIG.STORAGE_KEY_USER_CONFIG)) || "null");
-                if (uc) Object.assign(store.userConfig, Utils.deepMerge(store.userConfig, uc));
-
-                const sc = JSON.parse(localStorage.getItem(this.getKey(CONFIG.STORAGE_KEY_SESSION_CONFIG)) || "null");
-                if (sc) Object.assign(store.sessionConfig, Utils.deepMerge(store.sessionConfig, sc));
+                for (const [name, storageKey] of [['userConfig', CONFIG.STORAGE_KEY_USER_CONFIG],
+                                                  ['sessionConfig', CONFIG.STORAGE_KEY_SESSION_CONFIG]]) {
+                    const raw = localStorage.getItem(this.getKey(storageKey));
+                    if (!fromRemote) {
+                        // Start: magazyn na wierzch wartości domyślnych, a to,
+                        // co w nim leżało, staje się podstawą przyszłych scaleń.
+                        let stored;
+                        try { stored = JSON.parse(raw || 'null'); } catch { stored = null; }
+                        if (Utils.isObject(stored)) Object.assign(store[name], Utils.deepMerge(store[name], stored));
+                        this._synced[name] = Utils.isObject(stored) ? stored : {};
+                        continue;
+                    }
+                    // Zdarzenie z sąsiedniej karty: jej stan, a na wierzch nasze
+                    // niezapisane zmiany — autozapis dopisze je do magazynu.
+                    const { stored, merged } = this._mergeShared(name, raw);
+                    if (!stored) continue;
+                    this._adoptShared(name, merged);
+                    this._synced[name] = stored;
+                }
 
                 const allLocals = JSON.parse(localStorage.getItem(this.getKey(CONFIG.STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS)) || "{}");
                 if (store.currentTabInstanceId && allLocals[store.currentTabInstanceId]) {
@@ -1889,13 +1773,13 @@ const SCRIPT_LOGS_ENABLED = false;
                     const key = localStorage.key(i);
                     if (key && key.startsWith(prefix)) {
                         const tabKey = key.substring(prefix.length);
-                        store.tabCounters[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                        store.tabCounters[tabKey] = this.parseCount(localStorage.getItem(key));
                     } else if (key && key.startsWith(soldPrefix)) {
                         const tabKey = key.substring(soldPrefix.length);
-                        store.tabSold[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                        store.tabSold[tabKey] = this.parseCount(localStorage.getItem(key));
                     } else if (key && key.startsWith(neutralPrefix)) {
                         const tabKey = key.substring(neutralPrefix.length);
-                        store.tabNeutral[tabKey] = parseInt(localStorage.getItem(key), 10) || 0;
+                        store.tabNeutral[tabKey] = this.parseCount(localStorage.getItem(key));
                     } else if (key && key.startsWith(taskPrefix)) {
                         const parsed = this.parseTaskCounterKey(key.substring(CONFIG.SCRIPT_ID_PREFIX.length));
                         if (!parsed) continue;
@@ -1918,66 +1802,93 @@ const SCRIPT_LOGS_ENABLED = false;
             let parsed;
             try { parsed = JSON.parse(localStorage.getItem(this.getKey(CONFIG.STORAGE_KEY_TASKS)) || 'null'); }
             catch (e) { parsed = null; }
-            const list = (parsed && Array.isArray(parsed.list) ? parsed.list : [])
+            const list = this.cleanTasks(parsed && Array.isArray(parsed.list) ? parsed.list : []);
+            const activeId = parsed && typeof parsed.activeId === 'string' ? parsed.activeId : null;
+            TaskManager.adopt({
+                list,
+                activeId: list.some(t => t.id === activeId) ? activeId : (list.length ? list[list.length - 1].id : null),
+                activeAt: parsed && Number.isFinite(parsed.activeAt) ? parsed.activeAt : 0,
+                removed: parsed && Utils.isObject(parsed.removed) ? parsed.removed : {},
+            });
+        },
+        /** Zadania z magazynu: tylko poprawne pola, odcinki przez cleanSegments. */
+        cleanTasks(raw) {
+            return raw
                 .filter(t => t && typeof t.id === 'string' && Array.isArray(t.segments) && t.segments.length)
                 .map(t => ({
                     id: t.id,
                     name: String(t.name || CONFIG.DEFAULT_TASK_NAME).slice(0, CONFIG.TASK_MAX_NAME_LEN),
-                    segments: t.segments
-                        .filter(seg => seg && typeof seg.from === 'number')
-                        .map(seg => ({ from: seg.from, to: typeof seg.to === 'number' ? seg.to : null })),
-                }))
-                .filter(t => t.segments.length);
-            store.tasks = list;
-            const activeId = parsed && typeof parsed.activeId === 'string' ? parsed.activeId : null;
-            store.activeTaskId = list.some(t => t.id === activeId) ? activeId : (list.length ? list[list.length - 1].id : null);
+                    segments: this.cleanSegments(t.segments),
+                    updated: Number.isFinite(t.updated) ? t.updated : 0,
+                }));
+        },
+        /**
+         * Odcinki zadania z magazynu. JSON przepuszcza `1e999` (nieskończoność),
+         * a ręczna edycja — zero, liczby ujemne i daty z przyszłości.
+         *
+         * Odcinek poprawny: początek skończony, dodatni, nie w przyszłości;
+         * koniec pusty albo nie wcześniej niż początek. Resztę się pomija.
+         * Zadanie bez poprawnych odcinków nie znika, tylko dostaje zamknięty
+         * odcinek zerowej długości — jego paczki leżą pod osobnymi kluczami
+         * i bez zadania wypadłyby z sumy.
+         */
+        cleanSegments(raw) {
+            const now = Date.now();
+            const ok = (Array.isArray(raw) ? raw : [])
+                .filter(seg => seg && Number.isFinite(seg.from) && seg.from > 0 && seg.from <= now)
+                .map(seg => ({ from: seg.from, to: Number.isFinite(seg.to) ? seg.to : null }))
+                .filter(seg => seg.to === null || seg.to >= seg.from);
+            return ok.length ? ok : [{ from: now, to: now }];
         },
         listen() {
-            // 8.3.0: referencja do obsługi jest zapamiętana — potrzebna w Main.teardown().
+            // Referencja do obsługi jest zapamiętana — potrzebna w Main.teardown().
             this.onStorage = (e) => {
                 if (!e.key || !e.key.startsWith(CONFIG.SCRIPT_ID_PREFIX)) return;
-                // 9.1.0: wartość klucza zmienił KTOŚ INNY, więc nasza notatka
-                // „ostatnie zapisane” nie opisuje już magazynu. Bez tego
-                // deduplikacja mogłaby pominąć nasz następny zapis tej samej
-                // wartości i zostawić w kluczu cudzą.
+                // Klucz zmienił ktoś inny, więc notatka „ostatnio zapisane” nie
+                // opisuje już magazynu — inaczej deduplikacja pominęłaby nasz
+                // następny zapis tej samej wartości i zostawiła w kluczu cudzą.
                 delete this._lastWritten[e.key];
                 const localKey = e.key.substring(CONFIG.SCRIPT_ID_PREFIX.length);
+                // Wartość z magazynu teraz, a nie `e.newValue`: zdarzenie niesie
+                // wartość z chwili cudzego zapisu, a ta karta mogła od tamtej
+                // pory zapisać nowszą.
+                const current = localStorage.getItem(e.key);
                 if (localKey === CONFIG.STORAGE_KEY_VALUE_LOG) {
-                    // Dziennik wartości jest wspólny na wszystkie karty: sąsiadka
-                    // dopisała przedmiot albo postawiła znak — scalamy, nie zamazujemy.
+                    // Dziennik wartości jest wspólny dla kart: sąsiednia karta
+                    // dopisała przedmiot albo znak — scalamy, nie zamazujemy.
                     ValueLog.adoptRemote();
                     return;
                 }
                 if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TAB_COUNTER)) {
                     const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_COUNTER.length);
-                    // e.newValue === null znaczy, że klucz został usunięty — to
-                    // reset liczników przez sąsiednią kartę przy zmianie zmiany.
-                    const val = parseInt(e.newValue, 10) || 0;
+                    // Brak klucza (null) to reset liczników przez sąsiednią kartę
+                    // na początku nowej zmiany — parseCount da zero.
+                    const val = this.parseCount(current);
                     if (store.tabCounters[tabKey] !== val) store.tabCounters[tabKey] = val;
                 } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TAB_SOLD)) {
-                    // Licznik sprzedanych sąsiedniej karty — potrzebny liniom 2 i 7,
-                    // które liczą procent po WSZYSTKICH kartach naraz.
+                    // Sprzedane sąsiedniej karty — linie 2 i 7 liczą procent
+                    // po wszystkich kartach.
                     const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_SOLD.length);
-                    const val = parseInt(e.newValue, 10) || 0;
+                    const val = this.parseCount(current);
                     if (store.tabSold[tabKey] !== val) store.tabSold[tabKey] = val;
                 } else if (localKey === CONFIG.STORAGE_KEY_TASKS) {
-                    // Zadanie jest własnością człowieka, a nie karty: przejście
-                    // do innego procesu w jednej karcie obowiązuje we wszystkich.
+                    // Zadanie należy do człowieka, nie do karty: przejście do
+                    // innego procesu w jednej karcie obowiązuje we wszystkich.
                     this.loadTasks();
                 } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TASK_COUNTER)) {
-                    // Liczniki zadania z sąsiedniej karty — potrzebne panelowi,
-                    // który pokazuje podsumowanie zadania po WSZYSTKICH kartach.
+                    // Liczniki zadania z sąsiedniej karty — panel pokazuje
+                    // podsumowanie zadania po wszystkich kartach.
                     const parsed = this.parseTaskCounterKey(localKey);
                     if (parsed) {
                         const byTab = { ...(store.taskCounters[parsed.taskId] || {}) };
-                        byTab[parsed.tabKey] = this.parseTaskCounterValue(e.newValue);
+                        byTab[parsed.tabKey] = this.parseTaskCounterValue(current);
                         store.taskCounters = { ...store.taskCounters, [parsed.taskId]: byTab };
                     }
                 } else if (localKey.startsWith(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL)) {
-                    // Audyty sąsiedniej karty — z tego samego powodu: bez nich
-                    // linie 2 i 7 policzyłyby procent z za dużego mianownika.
+                    // Przedmioty spoza mianownika sąsiedniej karty — bez nich
+                    // linie 2 i 7 liczyłyby procent ze zbyt dużego mianownika.
                     const tabKey = localKey.substring(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL.length);
-                    const val = parseInt(e.newValue, 10) || 0;
+                    const val = this.parseCount(current);
                     if (store.tabNeutral[tabKey] !== val) store.tabNeutral[tabKey] = val;
                 } else if (!store.uiFlags.isSettingsPanelVisible) {
                     this.debouncedLoad();
@@ -1985,7 +1896,7 @@ const SCRIPT_LOGS_ENABLED = false;
             };
             window.addEventListener('storage', this.onStorage);
         },
-        debouncedLoad: Utils.debounce(function() { StorageManager.loadAll(true); }, 300)
+        debouncedLoad: Utils.debounce(function() { Persistence.loadAll(true); }, 300)
     };
 
     // ─── src/07-session-shift.js ───
@@ -1993,20 +1904,16 @@ const SCRIPT_LOGS_ENABLED = false;
     // 5b. SESSION RESET (reset między zmianami)
     // ==========================================
     /**
-     * Na części stacji roboczych (Windows, logowanie na własne konto) sesja
-     * przeglądarki NIE jest resetowana między zmianami, więc localStorage wnosi
-     * do nowej zmiany liczniki poprzedniej. Zmiana trwa 10,5 h, więc wszelkie
-     * dane dotyczące innej zmiany trzeba wyrzucić — inaczej wskaźnik
-     * „przedmiotów na godzinę” liczy się od cudzego czasu startu i kłamie.
+     * Na części stanowisk (Windows, własne konto) sesja przeglądarki nie jest
+     * resetowana między zmianami i localStorage wnosi do nowej zmiany liczniki
+     * poprzedniej. Dane innej zmiany trzeba wyrzucić — inaczej tempo liczy się
+     * od cudzego czasu startu. Ustawienia wyglądu zostają.
      */
     const SessionReset = {
         /**
-         * Ostatni reset: {kind, reason}. Notifier pokazuje go, gdy UI jest gotowy.
-         *
-         * 8.3.0: wcześniej leżał tu tylko łańcuch przyczyny, a Notifier przy
-         * KAŻDYM resecie pokazywał „Wykryto nową zmianę”. W efekcie przycisk
-         * „Zresetuj tylko liczniki” informował człowieka o nieistniejącej zmianie.
-         * Teraz rodzaj resetu przychodzi osobnym polem i tłumaczy się normalnie.
+         * Ostatni reset: {kind, reason}. Notifier pokazuje go, gdy UI jest
+         * gotowy; `kind` decyduje o komunikacie (nowa zmiana, dane
+         * przeterminowane, reset ręczny).
          */
         lastReset: null,
 
@@ -2020,22 +1927,19 @@ const SCRIPT_LOGS_ENABLED = false;
             Utils.log(`[RESET] Kasowanie danych o przedmiotach. Powód: ${reason}`);
             this.lastReset = { kind, reason };
 
-            // Licznik sprzedanych żyje dokładnie tyle samo, co zwykły licznik:
-            // procent sprzedaży opisuje JEDNĄ zmianę, więc zostawienie go przez
-            // granicę zmiany dałoby liczbę z cudzego dnia.
+            // Wszystko, co opisuje jedną zmianę: liczniki paczek, sprzedanych
+            // i spoza mianownika oraz zadania z ich licznikami.
             const prefixes = [
-                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER),
-                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD),
-                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL),
-                // Zadania opisują JEDNĄ zmianę, tak samo jak liczniki: zostawione
-                // przez granicę zmiany dałyby tempo liczone od wczoraj.
-                StorageManager.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER),
-                StorageManager.getKey(CONFIG.STORAGE_KEY_TASKS),
+                Persistence.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER),
+                Persistence.getKey(CONFIG.STORAGE_PREFIX_TAB_SOLD),
+                Persistence.getKey(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL),
+                Persistence.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER),
+                Persistence.getKey(CONFIG.STORAGE_KEY_TASKS),
             ];
             Object.keys(localStorage)
                 .filter(k => prefixes.some(p => k.startsWith(p)))
                 .forEach(k => {
-                    delete StorageManager._lastWritten[k];
+                    delete Persistence._lastWritten[k];
                     localStorage.removeItem(k);
                 });
 
@@ -2049,13 +1953,12 @@ const SCRIPT_LOGS_ENABLED = false;
             store.taskCounters = {};
             TaskManager.init();
 
-            // 8.4.0: dziennik wartości żyje dokładnie tyle samo, co liczniki —
-            // to ta sama ewidencja, tylko w pieniądzach. Podsumowania odchodzącej
-            // zmiany przed czyszczeniem idą do archiwum, więc historia nie ginie.
+            // Dziennik wartości to ta sama ewidencja w pieniądzach. Podsumowanie
+            // odchodzącej zmiany trafia przed czyszczeniem do archiwum.
             ValueLog.reset(reason);
 
             this.pruneTabInstances(true);
-            StorageManager.saveState();
+            Persistence.saveState();
             bus.emit('session:reset', { reason, kind });
         },
 
@@ -2086,26 +1989,32 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (isOrphan(id)) delete store.userConfig.customTabSettings[id];
             });
 
-            const allLocalsKey = StorageManager.getKey(CONFIG.STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS);
+            const allLocalsKey = Persistence.getKey(CONFIG.STORAGE_KEY_ALL_LOCAL_TAB_CONFIGS);
             try {
                 const allLocals = JSON.parse(localStorage.getItem(allLocalsKey) || "{}");
                 let changed = false;
                 Object.keys(allLocals).forEach(id => {
                     if (id === 'null' || isOrphan(id)) { delete allLocals[id]; changed = true; }
                 });
-                if (changed) StorageManager.write(allLocalsKey, JSON.stringify(allLocals));
+                if (changed) Persistence.write(allLocalsKey, JSON.stringify(allLocals));
             } catch (e) { Utils.error('pruneTabInstances: nie udało się rozebrać allLocalTabConfigs', e); }
         },
 
         /**
-         * Sprawdzenie asekuracyjne przy starcie: zapisany początek zmiany jest
-         * starszy niż 12 h. Działa nawet w tych przerwach, gdy bieżącej zmiany
-         * jeszcze nie da się rozpoznać (17:55-18:19 i 05:55-06:19) — wtedy
-         * porównać zmian ze sobą się nie da.
+         * Sprawdzenie przy starcie: zapisany początek zmiany starszy niż 12 h
+         * znaczy dane z poprzedniej zmiany. Działa także w martwej strefie
+         * (17:55–18:19 i 05:55–06:19), gdy bieżącej zmiany nie da się
+         * rozpoznać i porównać.
          */
         checkStaleOnBoot() {
             const start = store.sessionConfig.shiftCalculatedStartTime;
             if (!start || Date.now() - start <= CONFIG.STALE_SESSION_MS) return false;
+
+            // Zegar ścienny wskazuje wciąż tę samą zmianę — dane nie są
+            // przeterminowane, choćby minęło ponad 12 h. Tak jest w październikową
+            // noc zmiany czasu: 18:30 CEST → 05:55 CET to 12,42 h.
+            const current = ShiftManager.currentShift();
+            if (current && current.start === start) return false;
 
             const ageH = ((Date.now() - start) / 3600000).toFixed(1);
             store.sessionConfig.shiftType = null;
@@ -2117,7 +2026,14 @@ const SCRIPT_LOGS_ENABLED = false;
     };
 
     const ShiftManager = {
-        update() {
+        /**
+         * Zmiana, która trwa teraz według zegara ściennego: `{type, start}`,
+         * albo null w martwej strefie (17:55–18:19 i 05:55–06:19).
+         *
+         * Wspólne dla update() i checkStaleOnBoot(), żeby oba odpowiadały na
+         * pytanie „która zmiana trwa” tak samo.
+         */
+        currentShift() {
             const now = new Date();
             const minutes = now.getHours() * 60 + now.getMinutes();
             const ST = CONFIG.SHIFT_TIMES_LOCAL;
@@ -2141,13 +2057,20 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (now.getHours() < 12 && CST.NIGHT.H >= 12) sTime.setDate(now.getDate() - 1);
             }
 
-            // 8.1.0: w „martwej strefie” między zmianami (17:55-18:19 / 05:55-06:19)
-            // NIE zerujemy zapisanej zmiany. Wcześniej kasowało to czas startu
-            // i temu, kto został po 05:00, statystyka nagle się zerowała.
-            // Przy okazji zostaje kotwica do sprawdzenia przeterminowanych danych.
-            if (!sType) return;
+            return sType ? { type: sType, start: sTime.getTime() } : null;
+        },
 
-            const newStart = sTime.getTime();
+        update() {
+            const current = this.currentShift();
+
+            // W martwej strefie między zmianami zapisana zmiana zostaje: kto
+            // pracuje po 05:55, nie traci statystyki, a sprawdzenie
+            // przeterminowanych danych ma do czego się odnieść.
+            if (!current) return;
+
+            const sType = current.type;
+            const sTime = new Date(current.start);
+            const newStart = current.start;
             const oldStart = store.sessionConfig.shiftCalculatedStartTime;
             const oldType = store.sessionConfig.shiftType;
 
@@ -2155,15 +2078,14 @@ const SCRIPT_LOGS_ENABLED = false;
                 && typeof oldStart === 'number'
                 && Math.abs(newStart - oldStart) < CONFIG.SHIFT_IDENTITY_TOLERANCE_MS;
 
-            // Ta sama zmiana — wychodzimy, nie ruszając wybranej przez człowieka
-            // przerwy. (W 8.0.0 wybór przerwy kasował się przy każdym przeliczeniu.)
+            // Ta sama zmiana — wychodzimy, nie ruszając wybranej przez
+            // człowieka przerwy.
             if (sameShift) return;
 
-            // Zmiana RÓŻNI SIĘ od zapisanej, a zapisana istniała — czyli na tej
-            // maszynie zostały dane poprzedniej zmiany. Kluczowy przypadek:
-            // zmiana dzienna zaczęła się o 06:30, a o 18:21 przy tym samym
-            // komputerze siada zmiana nocna. Różnica to ledwie 11 h 51 min,
-            // próg 12 h jej nie złapie, a porównanie czasu startu — łapie.
+            // Zmiana różni się od zapisanej, a zapisana istniała — na maszynie
+            // zostały dane poprzedniej zmiany. Np. dzienna od 06:30, a o 18:21
+            // siada nocna: to 11 h 51 min, próg 12 h tego nie złapie,
+            // porównanie początku zmiany — tak.
             const isShiftRollover = typeof oldStart === 'number' && oldStart !== newStart;
 
             store.sessionConfig.shiftType = sType;
@@ -2182,15 +2104,13 @@ const SCRIPT_LOGS_ENABLED = false;
                 SessionReset.pruneTabInstances(false);
             }
 
-            StorageManager.saveState();
+            Persistence.saveState();
         },
         /**
-         * Ile z odcinka [from, to] zjadła przerwa obiadowa.
-         *
-         * Wydzielone z getWorkTime() w 1.3.0, bo ten sam rachunek jest potrzebny
-         * zadaniom: kto nie pamiętał o pauzie na obiad, miałby w zadaniu pół
-         * godziny pracy, której nie było. Jedno miejsce prawdy — obie strony
-         * odejmują dokładnie to samo.
+         * Ile z odcinka [from, to] zajęła przerwa obiadowa. Wspólne dla czasu
+         * zmiany i czasu zadań, żeby obie strony odejmowały to samo — kto nie
+         * zatrzymał zadania na obiad, nie dostaje pół godziny pracy, której
+         * nie było.
          */
         lunchOverlapMs(from, to) {
             const idx = store.sessionConfig.selectedLunchIndex;
@@ -2218,15 +2138,11 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/08-drag.js ───
     /**
-     * Fabryka przeciągania.
+     * Fabryka przeciągania — wspólna dla okna statystyk i karty ceny.
      *
-     * W 8.1.0 był to jeden na sztywno zapisany obiekt dla okna statystyk.
-     * W 8.2.0 pojawił się drugi przeciągalny panel — karta ceny — więc logika
-     * została wyniesiona do fabryki zamiast kopiowania.
-     *
-     * Oba panele w normalnym stanie są przezroczyste dla myszy
-     * (pointer-events:none), dlatego przeciąganie włącza się flagą z ustawień:
-     * dopiero wtedy element zaczyna przyjmować zdarzenia.
+     * Oba panele są normalnie przezroczyste dla myszy (pointer-events:none),
+     * więc przeciąganie włącza się flagą z ustawień; dopiero wtedy element
+     * przyjmuje zdarzenia. Po puszczeniu flaga gaśnie sama.
      */
     function createDragger({ elementId, getFlag, setFlag, savePosition }) {
         return {
@@ -2277,7 +2193,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 // to liczy się `top`, a domyślne przyklejenie do dołu ma zniknąć.
                 savePosition({ left: this.el.style.left, top: this.el.style.top, bottom: '' });
                 setFlag(false);
-                StorageManager.saveState();
+                Persistence.saveState();
             },
         };
     }
@@ -2305,23 +2221,16 @@ const SCRIPT_LOGS_ENABLED = false;
             this.styleEl = h('style', { id: 'reactiveStyles' });
             document.head.appendChild(this.styleEl);
             this.updateAll();
-            // 8.3.0: tylko wygląd karty. Wcześniej przebudowa całego łańcucha CSS
-            // (z podmianą textContent w <style>, czyli unieważnieniem stylów
-            // całego dokumentu) szła przy KAŻDEJ zmianie stanu, łącznie
-            // z uiFlags na każdym przetworzonym przedmiocie.
+            // Tylko wygląd karty: podmiana textContent w <style> unieważnia
+            // style całego dokumentu, więc nie może iść przy każdej zmianie
+            // stanu (np. flagach ustawianych na każdym przedmiocie).
             onStorePaths(['localTabConfig'], () => this.updateAll());
         },
         updateAll() {
             const lc = store.localTabConfig;
-            // 8.1.0: usunięta zmienna --sh-overlay-opacity — nikt jej nie czytał.
-            // Parzysta do niej --sh-bg-overlay w VisualsRenderer była natomiast
-            // czytana, ale nigdzie niedefiniowana; kolor nakładki i tak ustawia się
-            // z JS.
-            //
-            // BEZPIECZEŃSTWO: każda liczba wchodząca do tego łańcucha przechodzi
-            // przez Utils.clampNum, a każdy kolor przez Utils.hexToRgb. Oba
-            // zwracają wyłącznie cyfry, więc wartość z localStorage nie może
-            // zamknąć reguły i dopisać własnej.
+            // Każda liczba w tym łańcuchu przechodzi przez Utils.clampNum,
+            // a każdy kolor przez Utils.hexToRgb. Oba zwracają same cyfry, więc
+            // wartość z localStorage nie może zamknąć reguły i dopisać własnej.
             const bgAlpha = Utils.clampNum(lc.statsWindowBgAlpha, 0, 100, 0);
             let css = `:root {
                 --sh-bg-color: rgba(${Utils.hexToRgb(lc.statsWindowBgColorHex)}, ${bgAlpha / 100});
@@ -2382,23 +2291,16 @@ const SCRIPT_LOGS_ENABLED = false;
             });
             document.body.appendChild(this.el);
             this.applyPosition();
-            // 8.3.0: uiFlags tu nie wchodzą — okno statystyk od nich nie zależy,
-            // a ruszane są przy każdym przedmiocie. Raz na sekundę linia i tak
-            // przerysowuje się z timera poniżej.
-            // tabSold obok tabCounters, bo zmienia się NIEZALEŻNIE od niego:
-            // przedmiot zalicza się w jednym skanie, a kod sortowania potrafi
-            // przyjść w następnym. Bez tej ścieżki procent czekałby na takt
-            // timera, czyli do sekundy — widać by to było jako liczbę, która
-            // „nie nadąża” za ekranem.
+            // Bez uiFlags — okno od nich nie zależy, a zmieniają się przy każdym
+            // przedmiocie. tabSold osobno od tabCounters, bo kod sortowania
+            // potrafi przyjść w następnym skanie niż zaliczenie przedmiotu;
+            // bez tej ścieżki procent czekałby na takt timera.
             onStorePaths(['tabCounters', 'tabSold', 'tabNeutral', 'tasks', 'activeTaskId',
                           'taskCounters', 'sessionConfig', 'userConfig', 'localTabConfig'],
                          () => this.renderContent());
             onStorePaths(['localTabConfig.statsWindowPosition'], () => this.applyPosition());
             bus.on('valueLog:changed', () => this.renderContent());
-            // 8.1.0: było na sztywno 10000 ms, przez co zegar w linii 5 spóźniał
-            // się do dziesięciu sekund, a licznik przepracowanego czasu szedł
-            // skokami. Teraz używa się CONFIG.UI_UPDATE_INTERVAL_MS (1000 ms),
-            // zadeklarowanego jeszcze w 8.0.0, ale nigdzie niestosowanego.
+            // Takt raz na sekundę: zegar w linii 5 i czas pracy idą płynnie.
             this.tickTimer = setInterval(() => this.renderContent(), CONFIG.UI_UPDATE_INTERVAL_MS);
 
 
@@ -2422,14 +2324,11 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Ustawia okno wg konfiguracji (9.2.0).
+         * Ustawia okno wg konfiguracji. Puste `top` znaczy „trzymaj się dołu”
+         * i wtedy liczy się `bottom` (domyślny lewy dolny róg). Po przeciągnięciu
+         * `top` dostaje współrzędną i przyklejenie znika.
          *
-         * Puste `top` znaczy „trzymaj się dołu” i wtedy liczy się `bottom` —
-         * tak wygląda domyślny lewy dolny róg z odstępem 20 px. Po przeciągnięciu
-         * myszą `top` dostaje konkretną wartość i przyklejenie znika samo.
-         *
-         * Wydzielone w osobną metodę, bo wywołują ją trzy miejsca: start,
-         * przycisk resetu pozycji i reakcja na zmianę stanu.
+         * Wołane przy starcie, przez przycisk resetu pozycji i przy zmianie stanu.
          */
         applyPosition() {
             if (!this.el) return;
@@ -2445,13 +2344,20 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Składanie linii 6 — bilansu zmiany.
+         * LINIA 6 — bilans zmiany:
          *
-         * Wyniesione z renderContent() RAZEM z wywołaniem ValueLog.totals():
-         * przy wyłączonej linii nie ma po co przechodzić po całym dzienniku
-         * i przeliczać każdej pozycji po kursie, skoro wynik nie trafi na ekran.
-         * Linia 6 jest jedynym odbiorcą totals(), więc nic innego tego przebiegu
-         * nie potrzebuje.
+         *     +6000.00 -1500.00 = 4500.00 €  113 szt ?1
+         *
+         * Sprzedaż, utylizacja i różnica, czyli wynik zmiany. Kolory niosą
+         * znak (plus zielony, minus czerwony, wynik według znaku), dlatego
+         * linia składa się ze spanów. Kolor z ustawień dotyczy tylko części
+         * neutralnej (liczby sztuk); przezroczystość — całej linii.
+         *
+         * `?N` to przedmioty bez kierunku, bez ceny albo bez kursu: nie wchodzą
+         * do sum, ale przemilczenie ich tłumaczyłoby zaniżoną sumę.
+         *
+         * ValueLog.totals() woła się tylko tutaj — przy wyłączonej linii
+         * dziennik nie jest przeliczany wcale.
          */
         renderValueSum() {
             const vt = ValueLog.totals();
@@ -2468,13 +2374,18 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (bold) sp.style.fontWeight = '700';
                 return sp;
             };
-            const money = (v) => v.toFixed(2);
+            // Sumy są zawsze w euro; waluta wyświetlania to jedno mnożenie
+            // tutaj. „Jak w sklepie” zostaje przy euro — bilans z kilku sklepów
+            // nie ma jednej waluty. Bez kursu do wybranej waluty zostaje euro.
+            let cur = FxRates.displayCurrency() || 'EUR';
+            if (FxRates.fromEur(0, cur) == null) cur = 'EUR';
+            const money = (v) => FxRates.fromEur(v, cur).toFixed(2);
 
             l6.appendChild(piece(`+${money(vt.sold)}`, GREEN));
             l6.appendChild(document.createTextNode(' '));
             l6.appendChild(piece(`-${money(vt.unsold)}`, RED));
             l6.appendChild(document.createTextNode(' = '));
-            l6.appendChild(piece(`${vt.net >= 0 ? '' : '-'}${money(Math.abs(vt.net))} €`,
+            l6.appendChild(piece(`${vt.net >= 0 ? '' : '-'}${money(Math.abs(vt.net))} ${CONFIG.DISPLAY_CURRENCIES[cur]}`,
                                  vt.net >= 0 ? GREEN : RED, true));
             l6.appendChild(document.createTextNode('  '));
             l6.appendChild(piece(I18n.get('statsLine6_items', { n: vt.count }), DIM));
@@ -2486,20 +2397,13 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Czy linia jest w ogóle widoczna.
+         * Czy linia jest widoczna. Widocznością steruje CSS, ale kosztowne
+         * składanie węzłów (linie 2 i 6) idzie tylko dla linii widocznych —
+         * domyślnie widoczna jest jedna.
          *
-         * Widocznością steruje wyłącznie CSS (zmienna `--sh-<klucz>-display`),
-         * więc do tej poprawki render szedł bezwarunkowo: raz na sekundę składały
-         * się linie, których nikt nie ogląda. Przy ustawieniach domyślnych
-         * widoczna jest JEDNA linia z siedmiu, a każdy takt i tak tworzył komplet
-         * węzłów i przechodził po całym dzienniku wartości.
-         *
-         * Brak wpisu w konfiguracji znaczy „pokaż”, a nie „ukryj”: nowa linia
-         * dodana bez wartości domyślnej ma się pojawić, a nie zniknąć po cichu.
-         *
-         * Zmiana `visible` idzie przez onStorePaths(['localTabConfig']), czyli
-         * przez tę samą subskrypcję, która wywołuje renderContent() — włączona
-         * linia zapełnia się natychmiast, a nie dopiero przy następnym takcie.
+         * Brak wpisu w konfiguracji znaczy „pokaż”: nowa linia bez wartości
+         * domyślnej ma się pojawić, a nie zniknąć po cichu. Zmiana `visible`
+         * przerysowuje okno od razu (subskrypcja localTabConfig).
          */
         isLineVisible(key) {
             const cfg = store.localTabConfig.linesConfig[key];
@@ -2511,34 +2415,25 @@ const SCRIPT_LOGS_ENABLED = false;
             const hWorked = workedMs / 3600000;
             const cid = store.currentTabInstanceId;
             const cCount = store.tabCounters[cid] || 0;
-            // 8.1.0: wcześniej przy zbyt krótkim czasie podstawiało się tu całe
-            // zdanie, zawierające już „/h”, i w linii wychodziło „~0.0/h (...)/h”.
-            // Teraz funkcja zwraca zawsze samą liczbę.
-            // Granica „tempo jeszcze nie istnieje” stoi w jednym miejscu dla
-            // zmiany i dla zadania — inaczej linia 1 i linia 8 mówiłyby co
-            // innego o tej samej pierwszej minucie pracy.
+            // Zawsze sama liczba. Granica „tempo jeszcze nie istnieje”
+            // (RATE_MIN_WORKED_MS) jest ta sama dla zmiany i zadania, żeby
+            // linie 1 i 8 mówiły to samo o pierwszej minucie pracy.
             const getIph = (c) => workedMs >= CONFIG.RATE_MIN_WORKED_MS ? (c / hWorked).toFixed(1) : '0.0';
 
             /**
-             * PROCENT SPRZEDAŻY (koniec każdej z linii 1, 2 i 7).
+             * PROCENT SPRZEDAŻY — na końcu linii 1, 2 i 7.
              *
-             * Liczba od 0 do 100 ze znakiem procentu, zawsze na samym końcu linii.
-             * Mianownikiem jest licznik przedmiotów MINUS przedmioty
-             * nierozstrzygalne (audyt) — a nie suma sprzedanych i niesprzedanych.
-             * Dzięki temu przedmiot, przy którym kod się nie pojawił, obniża
-             * procent zamiast znikać z rachunku (trzy niesprzedaże na początku
-             * zmiany dają uczciwe 0%, a nie puste miejsce), a przedmiot oddany
-             * do audytu z rachunku wypada, bo jego kierunek rozstrzygnie się
-             * godziny później i nie na tym ekranie.
+             * Mianownik to licznik przedmiotów minus przedmioty spoza
+             * mianownika (audyt, wpisy ręczne), a nie suma sprzedanych
+             * i niesprzedanych. Przedmiot bez kodu obniża więc procent zamiast
+             * znikać z rachunku, a oddany do audytu wypada, bo jego kierunek
+             * rozstrzygnie się później i gdzie indziej. Liczba sztuk może być
+             * przez to większa niż mianownik — to poprawne.
              *
-             * Stąd druga liczba w nawiasie w linii 1 i liczba sztuk w linii 7
-             * mogą być WIĘKSZE niż mianownik procentu. To jest poprawne.
-             *
-             * Tekstu nie ma w słownikach celowo: to liczba i znak, identyczne we
-             * wszystkich trzech językach.
+             * Bez tekstu w słownikach: liczba i znak są takie same w każdym języku.
              */
             const cSold = store.tabSold[cid] || 0;
-            const cRated = cCount - (store.tabNeutral[cid] || 0);
+            const cRated = Math.max(0, cCount - (store.tabNeutral[cid] || 0));
 
             // Linia 1: bieżąca zakładka
             this.lines.line1_currentTab.textContent = I18n.get('statsLine1_current', {
@@ -2548,24 +2443,20 @@ const SCRIPT_LOGS_ENABLED = false;
             }) + ` ${Utils.percentFloor(cSold, cRated)}%`;
 
             /**
-             * Linia 2: podsumowanie globalne.
+             * Linia 2: podsumowanie wszystkich kart.
              *
-             * Pętla po kartach chodzi ZAWSZE, bo `gTotal` potrzebuje go także
-             * linia 7, a obie muszą pokazywać tę samą liczbę: dwa niezależne
-             * przebiegi prędzej czy później by się rozjechały. Pod warunkiem
-             * widoczności stoi natomiast SKŁADANIE WĘZŁÓW — to ono kosztuje,
-             * a nie przejście po trzech kluczach.
+             * Pętla po kartach chodzi zawsze, bo te same sumy pokazuje linia 7
+             * i muszą pochodzić z jednego przebiegu. Pod warunkiem widoczności
+             * stoi tylko składanie węzłów — to ono kosztuje.
              */
             const showLine2 = this.isLineVisible('line2_globalSummary');
-            // Czyścimy ZAWSZE, także przy wyłączonej linii: inaczej po jej
-            // schowaniu w węźle zostawałaby ostatnia treść — niewidoczna,
-            // ale wciąż wisząca w DOM i myląca przy diagnostyce.
+            // Czyszczenie zawsze, także przy wyłączonej linii — inaczej w DOM
+            // wisiałaby ostatnia, niewidoczna treść.
             this.lines.line2_globalSummary.innerHTML = '';
             let gTotal = 0;
             let gSold = 0;
-            // Mianownik procentu zbiera się w tej samej pętli, co suma sztuk:
-            // liczby muszą pochodzić z jednego przebiegu, inaczej rozjadą się
-            // przy karcie, która akurat doszła albo odpadła.
+            // Mianownik procentu zbiera się w tej samej pętli co suma sztuk,
+            // żeby obie liczby pochodziły z jednego przebiegu.
             let gRated = 0;
             const allKeys =[...Object.keys(CONFIG.KNOWN_TAB_TYPES), ...Object.keys(store.userConfig.customTabSettings)];
             const fragments =[];
@@ -2580,7 +2471,10 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (included && active) {
                     gTotal += count;
                     gSold += store.tabSold[k] || 0;
-                    gRated += count - (store.tabNeutral[k] || 0);
+                    // Wkład karty nieujemny: „poza mianownikiem” większe od
+                    // paczek to śmieć albo wyścig kart i nie może zawyżać
+                    // procentu całości.
+                    gRated += Math.max(0, count - (store.tabNeutral[k] || 0));
                     if (!showLine2) return;
                     const text = I18n.get('statsLine2_global_tab_format', {
                         tabName: I18n.getTabName(k).substring(0, 10),
@@ -2592,7 +2486,7 @@ const SCRIPT_LOGS_ENABLED = false;
                     if (isKnown && line2Cfg.multicolor) {
                         const hex = line2Cfg.customColors[k] || CONFIG.KNOWN_TAB_TYPES[k].baseColorHex;
                         const rgb = Utils.hexToRgb(hex);
-                        // Mieszamy własny kolor działu z ustawieniem alfy linii 2
+                        // Kolor działu z przezroczystością linii 2.
                         span.style.color = `rgba(${rgb}, ${line2Cfg.alpha / 100})`;
                         span.style.fontWeight = 'bold';
 
@@ -2641,79 +2535,31 @@ const SCRIPT_LOGS_ENABLED = false;
             // Linia 5: zegar
             this.lines.line5_realTimeClock.textContent = I18n.get('statsLine5_clock', { currentTime: Utils.formatTime(new Date(), true, ':') });
 
-            /**
-             * Line 6 — BILANS ZMIANY (9.0.0): trzy liczby w jednej linii.
-             *
-             *     +6000.00  -1500.00  = 4500.00 €  113szt ?1
-             *
-             * Pierwsza to ile wyrobiono na sprzedaży, druga ile poszło do
-             * utylizacji, trzecia (po „=”) to różnica, czyli wynik zmiany.
-             * Wszystko w euro: ceny z różnych rynków są przeliczone po kursie,
-             * inaczej funty i dolary po cichu zmieszałyby się z euro.
-             *
-             * Kolory niosą treść, a nie zdobią: plus zielony, minus czerwony,
-             * wynik pokolorowany wg własnego znaku — od razu widać, czy zmiana
-             * jest na plusie. Dlatego linia składa się ze spanów, jak linia 2
-             * z wielokolorowością, a nie pisze się jednym textContent.
-             *
-             * „?N” na końcu to przedmioty, dla których kod sortowania się nie
-             * pojawił. Nie idą ani na plus, ani na minus, ale milczeć o nich
-             * nie wolno: bez tego licznika nie wiadomo, czemu suma jest niższa
-             * od oczekiwanej.
-             *
-             * KOLOR I PRZEZROCZYSTOŚĆ (9.1.0): przezroczystość działa na całą
-             * linię, kolor z pickera tylko na część NEUTRALNĄ (liczbę sztuk).
-             * Zielony/czerwony/pomarańczowy nie są oddane pickerowi, bo to nie
-             * ozdoba, tylko jedyny sposób odczytania znaku jednym spojrzeniem.
-             *
-             * 9.2.0: linia domyślnie wyłączona — przy wyłączonym module cen nie
-             * ma czego sumować.
-             */
-            // Linia 6: przy wyłączonej nie ma po co przechodzić po całym
-            // dzienniku i przeliczać pozycji po kursie — wynik i tak nie trafi
-            // na ekran. Czyszczenie zostaje bezwarunkowe, z tego samego powodu
-            // co w linii 2.
+            // Linia 6 (renderValueSum): przy wyłączonej dziennik nie jest
+            // przeliczany; czyszczenie bezwarunkowe, jak w linii 2.
             if (this.isLineVisible('line6_valueSum')) this.renderValueSum();
             else this.lines.line6_valueSum.innerHTML = '';
 
             /**
-             * Line 7 — TRYB ZWIĘZŁY (9.2.0).
+             * LINIA 7 — trzy liczby bez jednostek i nazw:
              *
-             *     17.4 28
+             *     17.4 28 14%
              *
-             * Dwie liczby oddzielone pojedynczą spacją, nic więcej: żadnych
-             * jednostek, nazw działów ani nawiasów.
-             *
-             *   pierwsza — paczki na godzinę, suma ze WSZYSTKICH wliczanych kart.
-             *              To dokładnie ta liczba, która w linii 2 stoi po „=”;
-             *   druga    — łączna liczba zrobionych sztuk, czyli to, co w linii 2
-             *              jest w nawiasie na samym końcu.
-             *
-             * `gTotal` liczy się wyżej, przy składaniu linii 2, i to jest
-             * świadome: obie linie MUSZĄ pokazywać tę samą liczbę, a dwa
-             * niezależne przebiegi po kartach prędzej czy później by się
-             * rozjechały. Linia 2 może być wyłączona — pętla i tak chodzi, bo
-             * kosztuje tyle, co przejście po trzech kluczach.
-             *
-             * Cały tekst idzie przez textContent, więc nie ma tu żadnego
-             * składania HTML — kolor i rozmiar ustawia CSS ze zmiennych
-             * --sh-line7_compact-*.
+             * tempo (paczki na godzinę, wszystkie wliczane karty), liczba
+             * zrobionych sztuk i procent sprzedaży — te same, które stoją na
+             * końcu linii 2, z tego samego przebiegu pętli.
              */
             this.lines.line7_compact.textContent =
                 `${getIph(gTotal)} ${gTotal} ${Utils.percentFloor(gSold, gRated)}%`;
 
             /**
-             * LINIA 8 — BIEŻĄCE ZADANIE (1.3.0).
+             * LINIA 8 — bieżące zadanie i jego własne liczby, z własnym
+             * zegarem (opóźniony start nie psuje tempa):
              *
-             * Nazwa procesu i JEGO własne liczby. Linie wyżej opisują całą
-             * zmianę i po to są; tutaj stoi proces, przy którym człowiek siedzi
-             * w tej chwili — z własnym zegarem, więc opóźniony start nie psuje
-             * tempa. Format jest ten sam, co w podsumowaniu zadania w panelu:
+             *     fast_process 12 34.3/h 58% 21m 00s
              *
-             *     fast_process 12 34.3/h 58% 0:21
-             *
-             * Pauza (zamknięty odcinek) dokleja na końcu znak, bo inaczej
-             * stojące tempo wygląda jak zepsuty licznik.
+             * Zatrzymane zadanie dostaje na końcu znak pauzy — inaczej stojące
+             * tempo wyglądałoby jak zepsuty licznik.
              */
             const task = TaskManager.active();
             if (!task) {
@@ -2752,9 +2598,7 @@ const SCRIPT_LOGS_ENABLED = false;
             const lbl = h('span', { textContent: labelFormatter(value), style: { minWidth: '70px', fontSize: '0.9em' } });
             const inp = h('input', {
                 type: 'range', min, max, value, style: { flexGrow: '1' },
-                // 8.1.0: Number() — input.value to łańcuch, i do konfiguracji szło
-                // fontSize: "14" zamiast 14. Działało na rzutowaniu typów, ale
-                // śmieciło w zapisanym JSON.
+                // Number(): input.value to łańcuch, a konfiguracja trzyma liczby.
                 onInput: (e) => { lbl.textContent = labelFormatter(e.target.value); onChange(Number(e.target.value)); }
             });
             return[inp, lbl];
@@ -2782,8 +2626,16 @@ const SCRIPT_LOGS_ENABLED = false;
             const chk = h('input', { type: 'checkbox', checked, onChange: (e) => onChange(e.target.checked), style: { transform: 'scale(1.2)', marginRight: '8px', cursor: 'pointer' } });
             return h('label', { style: { display: 'flex', alignItems: 'center', cursor: 'pointer', flexGrow: '1' } }, chk, h('span', { textContent: label }));
         },
+        /**
+         * Pole liczby nieujemnej. Pusty tekst nie jest zerem — jedno Backspace
+         * i Enter w polu licznika działu skasowałoby paczki zmiany bez pytania.
+         * Zero trzeba wpisać świadomie.
+         */
         numberInput(val, onChange) {
-            return h('input', { type: 'number', min: 0, value: val, onChange: (e) => onChange(parseInt(e.target.value, 10) || 0), style: { width: '80px', padding: '4px', textAlign: 'right' }});
+            return h('input', { type: 'number', min: 0, value: val, onChange: (e) => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isFinite(n)) onChange(Math.max(0, n));
+            }, style: { width: '80px', padding: '4px', textAlign: 'right' }});
         }
     };
 
@@ -2803,36 +2655,23 @@ const SCRIPT_LOGS_ENABLED = false;
             document.body.appendChild(this.el);
 
             /**
-             * PRZYCISK MA POKAZYWAĆ STAN, A NIE PAMIĘTAĆ WŁASNE KLIKNIĘCIE.
+             * Przyciski przeciągania pokazują stan flag `uiFlags.*Dragging`,
+             * a flagi zdejmuje nie tylko kliknięcie, ale też dragger po
+             * puszczeniu myszy i reset pozycji. Panel przerysowuje się więc na
+             * każdą zmianę flagi — inaczej przycisk świeciłby „przeciąganie
+             * włączone” przy wyłączonym trybie.
              *
-             * Wygląd obu przycisków przeciągania wyliczany jest przy rysowaniu
-             * panelu z flag `uiFlags.*Dragging`. Przerysowanie wołała dotąd
-             * WYŁĄCZNIE obsługa kliknięcia — a flagę zdejmuje też ktoś inny:
-             * dragger po puszczeniu myszy (jedno przeciągnięcie = jedno
-             * ustawienie okna) i przycisk resetu pozycji.
-             *
-             * Skutek widoczny dla człowieka: przeciągnął okno, puścił — tryb już
-             * się wyłączył, ale przycisk dalej świeci pomarańczowym i twierdzi
-             * „kliknij, by przypiąć”. Kliknięcie w niego WŁĄCZA przeciąganie
-             * z powrotem, choć wygląda na wyłączające. Klasyczny rozjazd
-             * kontrolki ze stanem.
-             *
-             * Subskrypcja stoi w init(), a nie w render(): render() woła się przy
-             * każdej zmianie ustawienia, więc subskrypcje by się mnożyły.
+             * Subskrypcja w init(), a nie w render(), bo render() woła się przy
+             * każdej zmianie ustawienia i subskrypcje by się mnożyły.
              */
             bus.on('store:changed:uiFlags.isStatsWindowDragging', () => this.rerender());
             bus.on('store:changed:uiFlags.isPriceCardDragging', () => this.rerender());
         },
         /**
-         * Odroczone przerysowanie (8.3.0).
-         *
-         * Obsługi kontrolek wołały this.render() wprost, a render() zaczyna się
-         * od `this.el.innerHTML = ''` — czyli zdejmował element, który akurat
-         * w tym momencie wysyła zdarzenie. Przeglądarki to przeżywają, ale
-         * konstrukcja jest krucha, a przy wywołaniach zagnieżdżonych (checkbox ->
-         * render -> checkbox) zachowanie nie jest już określone. Teraz
-         * przerysowanie wychodzi poza granicę bieżącego zdarzenia i skleja się,
-         * jeśli poproszono o nie kilka razy.
+         * Odroczone przerysowanie. render() zaczyna od `innerHTML = ''`, czyli
+         * zdejmuje także element, który właśnie wysyła zdarzenie — dlatego
+         * obsługi kontrolek wołają rerender(), który wychodzi poza bieżące
+         * zdarzenie i skleja kilka próśb w jedno przerysowanie.
          */
         rerender() {
             clearTimeout(this._rerenderTimer);
@@ -2848,20 +2687,17 @@ const SCRIPT_LOGS_ENABLED = false;
                 setTimeout(() => this.el.style.transform = 'translateX(0)', 10);
             } else {
                 this.el.style.transform = 'translateX(110%)';
-                StorageManager.saveState();
+                Persistence.saveState();
                 setTimeout(() => this.el.style.display = 'none', 200);
             }
         },
         /**
-         * SEKCJA ZADAŃ — jedyna część panelu otwierana W TRAKCIE pracy.
+         * SEKCJA ZADAŃ — jedyna część panelu otwierana w trakcie pracy, więc
+         * stoi na górze; reszta (wygląd, kolory, skróty) ustawia się raz.
          *
-         * Stąd wzięła się kolejność: zadania i liczniki na samej górze, reszta
-         * (wygląd, kolory, skróty) niżej, bo to ustawia się raz na zmianę.
-         *
-         * Trzy rzeczy, które trzeba zrobić szybko, stoją obok siebie:
-         * przełączyć proces, poprawić jego początek i wpisać liczby po awarii
-         * maszyny. Każda mieści się w dwóch–trzech kliknięciach, bez list
-         * wyboru godziny i minuty.
+         * Obok siebie stoją trzy rzeczy robione szybko: przełączenie procesu,
+         * poprawa jego początku i wpisanie liczb po awarii maszyny — każda
+         * w dwóch-trzech kliknięciach.
          */
         buildTasksSection() {
             const sec = UIBuilder.section(I18n.get('section_tasks'));
@@ -2878,14 +2714,11 @@ const SCRIPT_LOGS_ENABLED = false;
                 })));
 
                 // --- początek bieżącego odcinka ---
-                // Skróty w minutach wstecz zamiast list godzin i minut: o nowym
-                // procesie człowiek dowiaduje się z wyprzedzeniem, zbiera
-                // narzędzia i siada do skryptu kilka minut po faktycznym starcie.
-                // Kontrolki opisują początek CAŁEGO zadania, a nie ostatniego
-                // odcinka: człowiek ma w głowie jedno zdanie „to zadanie zaczęło
-                // się o X”. Pierwsza wersja ruszała ostatni odcinek, przez co
-                // przy zatrzymanym zegarze każde kliknięcie dokładało czas
-                // zamiast go przestawiać (patrz TaskManager.setStart).
+                // Skróty w minutach wstecz zamiast list godzin i minut: człowiek
+                // siada do skryptu zwykle kilka minut po faktycznym starcie.
+                // Kontrolki przestawiają początek całego zadania, a nie
+                // ostatniego odcinka — „to zadanie zaczęło się o X”
+                // (TaskManager.setStart).
                 const startedAt = TaskManager.span(task).from;
                 const quick = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } });
                 CONFIG.TASK_QUICK_OFFSETS_MIN.forEach(min => {
@@ -2911,10 +2744,9 @@ const SCRIPT_LOGS_ENABLED = false;
                     style: { width: '70px', padding: '4px', textAlign: 'center' },
                 })));
 
-                // --- paczki i tempo: dwa pola opisujące TO SAMO ---
-                // Poprawiane jest zawsze to pole, w które człowiek wpisał
-                // liczbę; drugie przelicza się samo. Po wpisaniu tempa pokazuje
-                // się wartość OSIĄGALNA przy całych paczkach, a nie wpisana:
+                // --- paczki i tempo: dwa pola opisujące to samo ---
+                // Wpisuje się jedno, drugie przelicza się samo. Po wpisaniu
+                // tempa pokazuje się wartość osiągalna przy całych paczkach:
                 // przy 1:17 pracy „118” to 151 paczek, czyli 117,7 na godzinę.
                 const totals = TaskManager.totals(task);
                 sec.appendChild(UIBuilder.row(I18n.get('tasks_packages'), UIBuilder.numberInput(totals.done, v => {
@@ -3016,21 +2848,11 @@ const SCRIPT_LOGS_ENABLED = false;
          * zmieniła, a licznik karty ma za nią nadążyć. Gdyby zostało po staremu,
          * linia 1 pokazywałaby inną liczbę niż linia 8 dla tej samej pracy.
          */
-        syncTabCounters(tabKey) {
-            store.tabCounters[tabKey] = TaskManager.shiftTotal(tabKey, 'done');
-            store.tabSold[tabKey] = TaskManager.shiftTotal(tabKey, 'sold');
-            store.tabNeutral[tabKey] = TaskManager.shiftTotal(tabKey, 'neutral');
-            StorageManager.saveCounter(tabKey, store.tabCounters[tabKey]);
-            StorageManager.saveSold(tabKey, store.tabSold[tabKey]);
-            StorageManager.saveNeutral(tabKey, store.tabNeutral[tabKey]);
-        },
+        syncTabCounters(tabKey) { TaskManager.syncShift(tabKey); },
 
         /**
-         * LICZNIKI DZIAŁÓW — przeniesione pod zadania (1.3.0).
-         *
-         * Wpisanie liczby wprost („zrobiłem dziś 180”) to sposób na powrót do
-         * pracy po awarii maszyny, więc stoi tam, gdzie się go szuka: obok
-         * zadań, a nie na końcu panelu pod ustawieniami kolorów.
+         * LICZNIKI DZIAŁÓW — obok zadań, bo wpisanie liczby wprost („zrobiłem
+         * dziś 180”) to sposób na powrót do pracy po awarii maszyny.
          */
         buildCountersSection() {
             const sec = UIBuilder.section(I18n.get('section_globalStats'));
@@ -3052,32 +2874,27 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         render() {
-            // 8.3.0: panel nadal składa się w całości od nowa, ale przewijanie
-            // nie skacze już na początek — wcześniej było to zapisane w „znanych
-            // ograniczeniach” i przeszkadzało w ustawianiu dolnych sekcji.
+            // Panel składa się od nowa, ale pozycja przewinięcia zostaje.
             const scrollTop = this.el.scrollTop;
             this.el.innerHTML = '';
             this.el.appendChild(h('h2', { textContent: I18n.get('settingsPanelTitle'), style: { textAlign: 'center', marginTop: '0' } }));
 
-            // 0. Zadania i liczniki — na samej górze, bo to jedyna sekcja
-            // otwierana W TRAKCIE pracy. Reszta panelu to ustawienia, które
-            // stawia się raz i nie wraca do nich przez całą zmianę.
+            // 0. Zadania i liczniki — na górze, jedyna sekcja używana w trakcie pracy.
             this.el.appendChild(this.buildTasksSection());
             this.el.appendChild(this.buildCountersSection());
 
             // 1. Ogólne
             const secGen = UIBuilder.section(I18n.get('section_general'));
             secGen.appendChild(UIBuilder.row(I18n.get('language'), UIBuilder.select(CONFIG.AVAILABLE_LANGUAGES.map(l => ({ value: l.code, text: l.name })), store.userConfig.language, v => { store.userConfig.language = v; this.rerender(); })));
-            // 8.1.0: było localStorage.clear() — to kasowało magazyn CAŁEJ domeny,
-            // razem z roboczym stanem samego TREX. Teraz usuwane są wyłącznie
-            // klucze skryptu.
+            // Pełny reset usuwa wyłącznie klucze skryptu (ownKeys) — resztę
+            // localStorage tej domeny trzyma T-REX.
             secGen.appendChild(UIBuilder.button(I18n.get('settings_resetAllDataButton'), () => {
                 if (!confirm(I18n.get('settings_resetConfirm'))) return;
-                StorageManager.ownKeys().forEach(k => localStorage.removeItem(k));
+                Persistence.ownKeys().forEach(k => localStorage.removeItem(k));
                 CONFIG.LEGACY_ID_PREFIXES.forEach(p => {
                     Object.keys(localStorage).filter(k => k.startsWith(p)).forEach(k => localStorage.removeItem(k));
                 });
-                sessionStorage.removeItem(StorageManager.getKey(CONFIG.SESSION_STORAGE_TAB_INSTANCE_ID_KEY));
+                sessionStorage.removeItem(Persistence.getKey(CONFIG.SESSION_STORAGE_TAB_INSTANCE_ID_KEY));
                 location.reload();
             }, { background: '#d9534f', width: '100%', marginTop: '10px' }));
 
@@ -3097,10 +2914,7 @@ const SCRIPT_LOGS_ENABLED = false;
                     store.userConfig.customTabSettings[store.currentTabInstanceId] = { ...cust, displayName: e.target.value };
                 }, style: { flexGrow: '1', padding: '4px' } })));
                 secCur.appendChild(UIBuilder.row('', UIBuilder.checkbox(I18n.get('customTabIncludeInGlobal'), cust.includeInGlobal, v => {
-                    // 8.3.0: piszemy całym obiektem. Wcześniej było tu odwołanie
-                    // do `...[id].includeInGlobal`, choć dwie linie wyżej na ten
-                    // sam przypadek stał już zapasowy `cust`: gdyby wpisu nie było,
-                    // checkbox wywalałby się na TypeError.
+                    // Zapis całym obiektem — wpisu dla karty może jeszcze nie być.
                     store.userConfig.customTabSettings[store.currentTabInstanceId] =
                         { ...store.userConfig.customTabSettings[store.currentTabInstanceId] || cust, includeInGlobal: v };
                 })));
@@ -3149,9 +2963,14 @@ const SCRIPT_LOGS_ENABLED = false;
                     lineBox.appendChild(UIBuilder.hint(I18n.get('lineSettings_valueSumHint')));
                 }
                 // Linia 7 jest celowo uboga w treść — warto powiedzieć wprost,
-                // co znaczą te dwie liczby.
+                // co znaczą te trzy liczby.
                 if (lineKey === 'line7_compact') {
                     lineBox.appendChild(UIBuilder.hint(I18n.get('lineSettings_compactHint')));
+                }
+                // Linia 8 opisuje zadanie, a nie zmianę — bez tego zdania wygląda
+                // jak powtórzenie linii 1 z innymi liczbami.
+                if (lineKey === 'line8_taskInfo') {
+                    lineBox.appendChild(UIBuilder.hint(I18n.get('lineSettings_taskInfoHint')));
                 }
 
                 // Obsługa wielokoloru dla linii 2 (podsumowanie globalne)
@@ -3199,10 +3018,9 @@ const SCRIPT_LOGS_ENABLED = false;
 
             secWin.appendChild(UIBuilder.button(I18n.get('settings_resetWindowPositionButton'), () => {
                 store.localTabConfig.statsWindowPosition = Utils.clone(DEFAULT_LOCAL_CONFIG.statsWindowPosition);
-                // 9.2.0: pozycję nakłada renderer, bo od tej wersji potrafi ona
-                // być przyklejona do dołu, a nie tylko do góry. Ręczne ustawianie
-                // top/left tutaj zostawiłoby stare `bottom` i okno wylądowałoby
-                // w dwóch miejscach naraz.
+                // Pozycję nakłada renderer (applyPosition): okno bywa
+                // przyklejone do dołu, a ustawienie tu samych top/left
+                // zostawiłoby stare `bottom`.
                 StatsWindowRenderer.applyPosition();
                 if (store.uiFlags.isStatsWindowDragging) {
                     store.uiFlags.isStatsWindowDragging = false;
@@ -3224,15 +3042,12 @@ const SCRIPT_LOGS_ENABLED = false;
             this.el.appendChild(secAuto);
 
             /**
-             * 7a. GŁÓWNY WYŁĄCZNIK MODUŁU CEN (9.2.0).
+             * 7a. GŁÓWNY WYŁĄCZNIK MODUŁU CEN — przed kartą ceny i dziennikiem
+             * wartości, bo rozstrzyga o obu. Póki jest wyłączony, sieć śpi.
              *
-             * Osobna sekcja, postawiona PRZED kartą ceny i dziennikiem wartości,
-             * bo rozstrzyga o obu naraz. Póki jest wyłączony, sieć śpi.
-             *
-             * Włączenie jest tu obsłużone jawnie, a nie zostawione komuś innemu:
-             * dopiero w tym momencie wolno pobrać kursy walut i zapytać o cenę
-             * przedmiotu, który akurat jest na ekranie. To jedyne miejsce
-             * w całym pliku, z którego rusza pierwsze zapytanie do sieci.
+             * Kliknięcie tutaj (PriceModule.enable) to jedyne miejsce w pliku,
+             * z którego rusza pierwsze zapytanie do sieci: kursy walut i cena
+             * przedmiotu na ekranie.
              */
             const secModule = UIBuilder.section(I18n.get('priceModule_section'));
             const moduleOn = priceModuleOn();
@@ -3248,16 +3063,14 @@ const SCRIPT_LOGS_ENABLED = false;
             this.el.appendChild(secModule);
 
             if (!moduleOn) {
-                // Dalszych sekcji nie rysujemy wcale. To nie jest kosmetyka:
-                // ustawienia karty ceny sterują zachowaniem, którego przy
-                // wyłączonym module nie ma, a pokazywanie ich sugerowałoby, że
-                // coś się jednak dzieje w tle.
+                // Dalszych sekcji nie ma: pokazane ustawienia karty sugerowałyby,
+                // że przy wyłączonym module coś dzieje się w tle.
                 const off = UIBuilder.section(I18n.get('priceCard_section'));
                 off.appendChild(UIBuilder.hint(I18n.get('priceModule_offNotice')));
                 this.el.appendChild(off);
             } else {
 
-            // 7b. Karta ceny (8.2.0)
+            // 7b. Karta ceny
             const secPrice = UIBuilder.section(I18n.get('priceCard_section'));
             const pc = store.localTabConfig.priceCard;
 
@@ -3265,22 +3078,31 @@ const SCRIPT_LOGS_ENABLED = false;
             const mkKey = store.userConfig.marketplace || CONFIG.DEFAULT_MARKETPLACE;
             secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_marketplace'), UIBuilder.select(
                 Object.entries(CONFIG.MARKETPLACES).map(([k, m]) => ({
-                    value: k, text: m.host.replace(/^www\./, '') + (m.keepa_ok ? '' : '  ⚠'),
+                    value: k, text: m.host.replace(/^www\./, '') + (PriceSources.coversMarket(k) ? '' : '  ⚠'),
                 })), mkKey, v => { store.userConfig.marketplace = v; this.rerender(); })));
-            if (!CONFIG.MARKETPLACES[mkKey].keepa_ok) {
+            if (!PriceSources.coversMarket(mkKey)) {
                 secPrice.appendChild(h('div', {
-                    textContent: '⚠ ' + I18n.get('priceCard_marketNoKeepa'),
+                    textContent: '⚠ ' + I18n.get('priceCard_marketNoData'),
                     style: { fontSize: '0.85em', color: '#b06a00', margin: '-4px 0 10px 0', lineHeight: '1.35' },
                 }));
             }
 
-            // 8.4.0: trzy pozycje zamiast checkboxa „ciągnij tekstem”.
-            // Kolejność na liście — od zalecanej do zapasowych.
-            secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_source'), UIBuilder.select([
-                { value: 'ocr',   text: I18n.get('priceCard_src_ocr')   },
-                { value: 'graph', text: I18n.get('priceCard_src_graph') },
-                { value: 'jina',  text: I18n.get('priceCard_src_jina')  },
-            ], pc.source, v => { store.localTabConfig.priceCard.source = v; this.rerender(); })));
+            // Waluta, w której kwoty się pokazuje. Liczy się zawsze w euro,
+            // więc przełączenie w trakcie zmiany niczego nie gubi. Ustawienie
+            // wspólne jak sklep: wszystkie karty mówią jedną walutą.
+            secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_displayCurrency'), UIBuilder.select(
+                [{ value: 'native', text: I18n.get('priceCard_displayNative') }]
+                    .concat(Object.entries(CONFIG.DISPLAY_CURRENCIES).map(([code, sign]) => ({
+                        value: code, text: `${code} (${sign})`,
+                    }))),
+                FxRates.displayCurrency() || 'native',
+                v => { store.userConfig.displayCurrency = v; PriceCard.render(); this.rerender(); })));
+            secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_displayCurrencyHint')));
+
+            // Źródło ceny — tryby z PriceSources, od zalecanego do zapasowych.
+            secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_source'), UIBuilder.select(
+                PriceSources.modes.map(m => ({ value: m.value, text: I18n.get(m.labelKey) })),
+                pc.source, v => { store.localTabConfig.priceCard.source = v; this.rerender(); })));
 
             secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
                 I18n.get('priceCard_fallback'), pc.marketFallback !== false,
@@ -3300,7 +3122,7 @@ const SCRIPT_LOGS_ENABLED = false;
             if (pc.visible) {
                 secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_openHint')));
 
-                if (pc.source === 'graph') {
+                if (PriceSources.showsChart(pc.source)) {
                     secPrice.appendChild(UIBuilder.row('', UIBuilder.checkbox(
                         I18n.get('priceCard_showGraph'), pc.showGraph,
                         v => { store.localTabConfig.priceCard.showGraph = v; this.rerender(); })));
@@ -3345,14 +3167,13 @@ const SCRIPT_LOGS_ENABLED = false;
                     v => store.localTabConfig.priceCard.fontFamily = v)));
 
                 // Dolna granica jest celowo niska: w trybie przycięcia wąska
-                // karta nadal jest użyteczna — legenda Keepa nigdzie nie znika.
+                // karta nadal jest użyteczna — legenda wykresu nigdzie nie znika.
                 secPrice.appendChild(UIBuilder.row('', ...UIBuilder.slider(
                     170, 900, pc.width,
                     v => store.localTabConfig.priceCard.width = v,
                     v => I18n.get('priceCard_width', { value: v }))));
 
-                // Dolna granica zeszła z 14 na 11: karta ma dać się zrównać
-                // z liniami okna statystyk, a te schodzą niżej.
+                // Od 11: karta ma dać się zrównać z liniami okna statystyk.
                 secPrice.appendChild(UIBuilder.row('', ...UIBuilder.slider(
                     11, 48, pc.fontSize,
                     v => store.localTabConfig.priceCard.fontSize = v,
@@ -3387,7 +3208,7 @@ const SCRIPT_LOGS_ENABLED = false;
             }
             this.el.appendChild(secPrice);
 
-            // 7c. Dziennik wartości (8.4.0)
+            // 7c. Dziennik wartości
             const secVal = UIBuilder.section(I18n.get('valueLog_section'));
             secVal.appendChild(UIBuilder.row('', UIBuilder.checkbox(
                 I18n.get('valueLog_enabled'), pc.logValues,
@@ -3457,9 +3278,11 @@ const SCRIPT_LOGS_ENABLED = false;
             });
 
             const codeBox = readOnlyBox(ConfigCode.encode());
-            const linkBox = readOnlyBox(ConfigCode.link());
             secCode.appendChild(UIBuilder.row(I18n.get('configCode_yours'), codeBox));
-            secCode.appendChild(UIBuilder.row(I18n.get('configCode_link'), linkBox));
+            const link = ConfigCode.link();
+            secCode.appendChild(link
+                ? UIBuilder.row(I18n.get('configCode_link'), readOnlyBox(link))
+                : UIBuilder.hint(I18n.get('configCode_linkMissing')));
 
             secCode.appendChild(UIBuilder.button(I18n.get('configCode_select'), () => {
                 codeBox.focus();
@@ -3491,9 +3314,29 @@ const SCRIPT_LOGS_ENABLED = false;
             }, { width: '100%', marginTop: '6px' }));
             this.el.appendChild(secCode);
 
-            // Zamknięcie
-            this.el.appendChild(h('hr', { style: { margin: '20px 0' } }));
-            this.el.appendChild(UIBuilder.button(I18n.get('settings_applyAndCloseButton'), () => this.toggle(), { width: '100%', padding: '10px', fontSize: '1.1em' }));
+            /**
+             * Zamknięcie przyklejone do dołu panelu (`position: sticky`):
+             * widać je zawsze, bez przewijania na koniec, ile by sekcji nie
+             * przybyło. Ustawienia zapisują się od razu przy zmianie, więc
+             * przycisk tylko zamyka panel — wcześniej niczego nie gubi.
+             *
+             * Ujemne marginesy wyrównują pasek z krawędziami panelu (wcięcia
+             * 15/25 px). Tło panelu jest lekko przezroczyste, więc pod paskiem
+             * treść przewijana jest dodatkowo rozmyta — inaczej prześwitywałaby
+             * spod przycisku.
+             */
+            this.el.appendChild(h('div', {
+                id: 'settingsPanelFooter',
+                style: {
+                    position: 'sticky', bottom: '-15px', zIndex: '1',
+                    margin: '20px -15px -15px -25px', padding: '10px 15px 15px 25px',
+                    background: CONFIG.SETTINGS_PANEL_BACKGROUND_COLOR,
+                    backdropFilter: 'blur(6px)',
+                    borderTop: `1px solid ${CONFIG.SETTINGS_PANEL_ACCENT_COLOR}33`,
+                    boxShadow: '0 -4px 8px rgba(0,0,0,0.06)',
+                },
+            }, UIBuilder.button(I18n.get('settings_applyAndCloseButton'), () => this.toggle(),
+                { width: '100%', padding: '10px', fontSize: '1.1em' })));
 
             this.el.scrollTop = scrollTop;
         }
@@ -3503,8 +3346,8 @@ const SCRIPT_LOGS_ENABLED = false;
     // Renderer przyciemnienia i wskaźnika
     const VisualsRenderer = {
         init() {
-            // 8.1.0: id jest obowiązkowe — po nim AutoTrigger odróżnia własne
-            // elementy skryptu od zmian strony (patrz AutoTrigger.isOwnNode).
+            // id jest obowiązkowe — po nim AutoTrigger odróżnia własne elementy
+            // skryptu od zmian strony (AutoTrigger.isOwnNode).
             this.overlay = h('div', { id: 'pageOverlay', style: { position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh', zIndex: '1', pointerEvents: 'none', transition: 'background-color 0.4s', backgroundColor: 'transparent' } });
             this.indicator = h('div', { id: 'pageIndicator', style: { position: 'fixed', top: '50%', right: '100px', transform: 'translateY(-50%) rotate(90deg)', transformOrigin: 'bottom right', fontSize: '5vw', fontWeight: 'bold', zIndex: '2', pointerEvents: 'none', transition: 'opacity 0.4s', opacity: '0' } });
             document.body.appendChild(this.overlay);
@@ -3533,11 +3376,10 @@ const SCRIPT_LOGS_ENABLED = false;
     };
 
     /**
-     * Krótkie wyskakujące powiadomienie. Potrzebne przede wszystkim przy
-     * resecie liczników: człowiek musi widzieć, że zerowanie było zamierzone,
-     * a nie że dane zgubiły się same. Reset może zdarzyć się przed pojawieniem
-     * się UI (na etapie ładowania), dlatego ostatni komunikat pamiętany jest
-     * w SessionReset.lastReset i pokazuje się zaraz po inicjalizacji interfejsu.
+     * Krótkie wyskakujące powiadomienie — głównie przy resecie liczników:
+     * człowiek ma widzieć, że zerowanie było zamierzone, a nie że dane zgubiły
+     * się same. Reset bywa przed postawieniem interfejsu, więc ostatni
+     * komunikat czeka w SessionReset.lastReset.
      */
     const Notifier = {
         init() {
@@ -3560,6 +3402,18 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.show(this.resetText(SessionReset.lastReset.kind));
                 SessionReset.lastReset = null;
             }
+            bus.on('storage:writeFailed', () => this.warnStorageFull());
+            if (Persistence.writeFailed) this.warnStorageFull();
+        },
+        /**
+         * Pełny magazyn — raz na stronę. Zapisów jest kilka na przedmiot, więc
+         * bez tego znacznika powiadomienie wisiałoby na ekranie przez całą zmianę.
+         */
+        storageWarned: false,
+        warnStorageFull() {
+            if (this.storageWarned) return;
+            this.storageWarned = true;
+            this.show(I18n.get('notice_storageFull'), 12000);
         },
         /** Tekst powiadomienia wg rodzaju resetu. */
         resetText(kind) {
@@ -3578,64 +3432,147 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/14-marketplace.js ───
     /**
-     * Bieżący sklep Amazon (8.5.0). Jedno miejsce prawdy dla linku, wykresu
-     * i waluty dziennika — patrz CONFIG.MARKETPLACES.
+     * Bieżący sklep Amazon — jedno miejsce prawdy dla linku, wykresu i waluty
+     * ceny (CONFIG.MARKETPLACES). Nieznany klucz daje sklep domyślny.
      */
     function marketplaceKey() {
         const key = store.userConfig.marketplace || CONFIG.DEFAULT_MARKETPLACE;
         return CONFIG.MARKETPLACES[key] ? key : CONFIG.DEFAULT_MARKETPLACE;
     }
-    /** @param {string} [key] — konkretny rynek; bez niego bierze się wybrany. */
+    /** @param {string} [key] - konkretny rynek; bez niego bierze się wybrany. */
     function marketplace(key) {
         return CONFIG.MARKETPLACES[key] || CONFIG.MARKETPLACES[marketplaceKey()];
     }
     /**
      * Link do karty produktu.
      *
-     * @param {string} [key] — rynek, NA KTÓRYM ZNALEZIONO CENĘ. Trzeba go
-     *   podawać jawnie: jeśli ceny trzeba było szukać przeglądem sklepów, link
-     *   musi prowadzić właśnie tam, inaczej człowiek otworzy amazon.de i nie
-     *   znajdzie tam ceny, którą widzi na karcie.
+     * @param {string} [key] - rynek, na którym znaleziono cenę; po przeglądzie
+     *   sklepów link musi prowadzić tam, gdzie ta cena jest.
      *
-     * BEZPIECZEŃSTWO: host pochodzi WYŁĄCZNIE z tablicy CONFIG.MARKETPLACES
-     * (marketplace() przy nieznanym kluczu wraca do domyślnego), a ASIN idzie
-     * przez encodeURIComponent. Schemat jest wpisany na sztywno, więc do
-     * atrybutu href nie da się wstawić `javascript:` ani `data:` — nawet gdyby
-     * ASIN przyszedł ze strony w spreparowanej postaci.
+     * Host pochodzi wyłącznie z CONFIG.MARKETPLACES, schemat jest wpisany na
+     * sztywno, a ASIN idzie przez encodeURIComponent — do href nie da się
+     * wstawić `javascript:` ani `data:`, nawet ze spreparowanym ASIN.
      */
     function productUrl(asin, key) {
         return `https://${marketplace(key).host}/dp/${encodeURIComponent(asin)}`;
     }
 
-    // ─── src/15-price-ocr.js ───
+    // ─── src/15-price-sources.js ───
     // ==========================================
-    // 6c. ODCZYT CENY Z OBRAZKA KEEPA (8.4.0)
+    // 6c. ŹRÓDŁA CEN I KURSÓW — JEDYNE MIEJSCE, KTÓRE ZNA SIEĆ ZEWNĘTRZNĄ
     // ==========================================
     /**
-     * Keepa drukuje aktualne ceny wprost w legendzie wykresu. Obrazek wychodzi
-     * z nagłówkami CORS, więc piksele są dostępne przez canvas — i cenę da się
-     * dostać LICZBĄ, bez płatnego klucza API i bez zapytań do Amazona.
+     * Wszystko, co wie, SKĄD przychodzi cena produktu i kurs waluty, stoi
+     * w tym pliku. Karta ceny, dziennik wartości, kursy walut i panel znają
+     * tylko kontrakt opisany niżej — nie znają ani hostów, ani formatów
+     * odpowiedzi. Wymiana źródeł (np. na wewnętrzne API) to przepisanie tego
+     * pliku według kontraktu; reszta skryptu tego nie zauważy.
      *
-     * DLACZEGO WŁASNY ODCZYT, A NIE GOTOWA BIBLIOTEKA. Rozbiór pikseli 20
-     * prawdziwych produktów (stanowisko ocr_verify.html) pokazał: font legendy
-     * jest RASTROWY i NIEZMIENNY — ten sam znak u różnych produktów zgadza się
-     * piksel w piksel, 166 egzemplarzy glifów sprowadziło się do 16 kształtów.
-     * To nie jest zadanie rozpoznawania, tylko wyszukiwania w tablicy.
+     * Zawartość:
+     *   PriceNet     — jedyne wyjście do sieci modułu cen: zapytanie HTTP
+     *                  i obrazek w tle, każde z twardym priceModuleOn();
+     *   KeepaOCR     — odczyt ceny z pikseli wykresu Keepa;
+     *   PriceSources — źródła ceny i kursów według kontraktu.
      *
-     * Pomiar na tych samych 20 produktach (32 wiersze legendy):
-     *   ten odczyt    32/32,  0,14 ms,  bez zależności
-     *   tesseract.js  13/20,   140 ms,  +315 ms start, ~2-4 MB pobierania
+     * KONTRAKT ŹRÓDŁA CENY — element PriceSources.list():
+     *   name          nazwa w wierszu źródła karty i w logach;
+     *   kind          'image' | 'text' — który licznik i limit zapytań się
+     *                 liczy i która blokada CSP (img-src / connect-src)
+     *                 wyłącza źródło;
+     *   available     czy źródło jest w użyciu przy bieżących ustawieniach
+     *                 karty; false — pomijane;
+     *   marketSearch  czy nadaje się do przeglądu innych sklepów, gdy
+     *                 w wybranym ceny nie ma;
+     *   run(asin, signal, market) → Promise<PriceResult|null>
+     *                 null — źródło odpowiedziało, ceny nie ma;
+     *                 wyjątek — awaria (sieć, HTTP, format odpowiedzi);
+     *                 `signal` przerywa zapytanie po limicie czasu, `market`
+     *                 to klucz z CONFIG.MARKETPLACES (bez niego: wybrany).
      *
-     * Przy czym błędy tesseracta są groźne właśnie dla ewidencji: gubi kropkę
-     * dziesiętną („5.99” -> „599”) i myli rzędy („17.90” -> „175.90”), czyli
-     * kłamie W STRONĘ ZAWYŻENIA i po cichu. Porównanie z wzorcami tak pomylić
-     * się nie może: sprawdza glify bit po bicie, a przy niezgodności nie zgaduje
-     * najbliższego, tylko zwraca null.
+     *   PriceResult = { current: Money|null, rrp: Money|null, stale: boolean,
+     *                   secondary?: { text }, series?: string, market?: string }
+     *   Money       = { value: number, currency: string, text: string }
+     *                 — waluta musi mieć kurs w CONFIG.FX_FALLBACK, inaczej
+     *                 kwota nie wejdzie do sum w euro (PriceSources.money()).
+     *
+     * Pozostała część kontraktu (opisy przy polach): modes, chart, cspHosts,
+     * coversMarket(), fxProviders, probes().
+     *
+     * Kolejność list jest kolejnością pytania. Limity, przerwy między
+     * zapytaniami, limit czasu, przegląd sklepów i blokady CSP prowadzi karta
+     * ceny (PriceCard) — źródło tylko pyta i rozbiera odpowiedź.
+     */
+    const PriceNet = {
+        /**
+         * Zapytanie HTTP. `init` idzie do fetch bez zmian — tędy wchodzą
+         * `signal`, nagłówki, `cache` i `credentials` (np. 'include' dla
+         * usługi, która rozpoznaje zalogowanego pracownika po ciasteczkach
+         * przeglądarki).
+         *
+         * Najniższy poziom, na którym moduł cen dotyka sieci, więc stoi tu
+         * twarde sprawdzenie modułu: nowa ścieżka wywołania bez sprawdzenia
+         * wyżej i tak nie wyśle zapytania.
+         */
+        request(url, init) {
+            if (!priceModuleOn()) {
+                return Promise.reject(new Error('moduł cen wyłączony — zapytanie nie zostało wysłane'));
+            }
+            return fetch(url, init);
+        },
+
+        /**
+         * Obrazek ładowany w tle, poza dokumentem.
+         *   crossOrigin    — 'anonymous', gdy potrzebne są piksele: bez niego
+         *                    canvas jest skażony i getImageData rzuca
+         *                    SecurityError; null — sam fakt załadowania;
+         *   referrerPolicy — Keepa oddaje obrazek tylko bez nagłówka Referer.
+         * Po limicie czasu ładowanie jest przerywane (`src = ''`).
+         *
+         * Sprawdzenie modułu cen — jak w request().
+         *
+         * @param {string} url
+         * @param {{timeoutMs?: number, crossOrigin?: string|null, referrerPolicy?: string}} [opts]
+         * @returns {Promise<HTMLImageElement>}
+         */
+        image(url, { timeoutMs, crossOrigin = 'anonymous', referrerPolicy = 'no-referrer' } = {}) {
+            if (!priceModuleOn()) {
+                return Promise.reject(new Error('moduł cen wyłączony — zapytanie nie zostało wysłane'));
+            }
+            return new Promise((res, rej) => {
+                const im = new Image();
+                if (crossOrigin) im.crossOrigin = crossOrigin;
+                im.referrerPolicy = referrerPolicy;
+                let done = false;
+                const timer = setTimeout(() => {
+                    if (done) return;
+                    done = true; im.src = '';
+                    rej(new Error('przekroczony czas oczekiwania na obrazek'));
+                }, timeoutMs || CONFIG.PRICE_REQUEST_TIMEOUT_MS);
+                im.onload = () => { if (done) return; done = true; clearTimeout(timer); res(im); };
+                im.onerror = () => { if (done) return; done = true; clearTimeout(timer); rej(new Error('obrazek się nie załadował')); };
+                im.src = url;
+            });
+        },
+    };
+
+    /**
+     * ODCZYT CENY Z OBRAZKA KEEPA.
+     *
+     * Keepa drukuje aktualne ceny w legendzie wykresu. Obrazek wychodzi
+     * z nagłówkami CORS, więc piksele są dostępne przez canvas i cenę da się
+     * odczytać jako liczbę — bez klucza API i bez zapytań do Amazona.
+     *
+     * Własny odczyt zamiast biblioteki OCR: font legendy jest rastrowy
+     * i niezmienny (166 glifów z 20 produktów to 16 kształtów zgodnych piksel
+     * w piksel), więc to wyszukiwanie w tablicy, a nie rozpoznawanie.
+     * Na 32 wierszach legendy: ten odczyt 32/32 w 0,14 ms, tesseract.js 13/20
+     * w 140 ms plus kilka MB pobierania — i to z błędami zawyżającymi cenę
+     * („5.99” -> „599”). Porównanie wzorców nie zgaduje: przy niezgodności
+     * zwraca null.
      */
     const KeepaOCR = {
         // Znak ma 7 pikseli wysokości. '#' — atrament, '.' — tło.
-        // Alfabet wyuczony automatycznie po znanych cenach, patrz ocr_probe.js
-        // (OCR.learn) — tam też można go dobudować, gdyby Keepa zmieniła font.
+        // Wzorce wyuczone z pikseli obrazków o znanych cenach.
         GLYPHS: {
             '0': ['.####','##..#','##..#','##..#','##..#','##..#','.####'],
             '1': ['###','###','.##','.##','.##','.##','.##'],
@@ -3672,13 +3609,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Adres obrazka wykresu.
-         *
-         * ASIN jest tu WYMUSZANY do formatu (dziesięć znaków A-Z0-9), a nie
-         * tylko kodowany. Powód: adres składa się łańcuchem, a ASIN pochodzi ze
-         * strony — czyli z zewnątrz. Kotwiczony wzorzec odcina próbę doklejenia
-         * własnych parametrów albo podmiany ścieżki, a przy niezgodności rzuca
-         * wyjątek, zamiast wysyłać cokolwiek w sieć.
+         * Adres obrazka wykresu. ASIN pochodzi ze strony, więc musi mieć format
+         * (dziesięć znaków A-Z0-9), a nie tylko być zakodowany: zakotwiczony
+         * wzorzec odcina doklejenie parametrów, a przy niezgodności leci
+         * wyjątek zamiast zapytania.
          */
         url(asin, market) {
             const clean = String(asin || '').toUpperCase();
@@ -3688,40 +3622,16 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Obrazek do rozbioru. Ładuje się W TLE i do dokumentu nie trafia.
+         * Obrazek do rozbioru — przez PriceNet.image(), z crossOrigin, bo
+         * potrzebne są piksele. Widoczny <img> wykresu (tryb 'graph') idzie
+         * bez crossOrigin — tam pikseli się nie czyta.
          *
-         * Oba atrybuty są obowiązkowe i z różnych powodów:
-         *   crossOrigin    — bez niego canvas jest „skażony” (tainted)
-         *                    i getImageData rzuca SecurityError, czyli pikseli
-         *                    nie widać;
-         *   referrerPolicy — bez niego Keepa nie oddaje obrazka w ogóle.
-         * Widoczny <img> wykresu zostaje BEZ crossOrigin: tam piksele nie są
-         * potrzebne, a zbędnego nagłówka Origin w trybie roboczym nie ma po co
-         * zmieniać.
-         *
-         * 9.2.0 — BEZPIECZNIK SIECIOWY. To jest najniższy poziom, na którym
-         * skrypt dotyka sieci zewnętrznej, więc stoi tu twarde sprawdzenie
-         * modułu cen. Gdyby ktoś dorobił nową ścieżkę wywołania i zapomniał
-         * o sprawdzeniu wyżej, zapytanie i tak nie wyjdzie.
+         * Zły ASIN kończy się odrzuceniem obietnicy, a nie wyjątkiem.
          */
         loadImage(asin, timeoutMs, market) {
-            if (!priceModuleOn()) {
-                return Promise.reject(new Error('moduł cen wyłączony — zapytanie nie zostało wysłane'));
-            }
-            return new Promise((res, rej) => {
-                const im = new Image();
-                im.crossOrigin = 'anonymous';
-                im.referrerPolicy = 'no-referrer';
-                let done = false;
-                const timer = setTimeout(() => {
-                    if (done) return;
-                    done = true; im.src = '';
-                    rej(new Error('przekroczony czas oczekiwania na obrazek'));
-                }, timeoutMs || CONFIG.PRICE_REQUEST_TIMEOUT_MS);
-                im.onload = () => { if (done) return; done = true; clearTimeout(timer); res(im); };
-                im.onerror = () => { if (done) return; done = true; clearTimeout(timer); rej(new Error('obrazek się nie załadował')); };
-                im.src = this.url(asin, market);
-            });
+            let url;
+            try { url = this.url(asin, market); } catch (e) { return Promise.reject(e); }
+            return PriceNet.image(url, { timeoutMs });
         },
 
         pixels(im) {
@@ -3732,8 +3642,8 @@ const SCRIPT_LOGS_ENABLED = false;
             try {
                 return ctx.getImageData(0, 0, c.width, c.height);
             } catch (e) {
-                // cause zachowuje pierwotny SecurityError: bez niego w konsoli zostaje
-                // sam nasz komunikat i nie widać, co dokładnie zablokowała przeglądarka.
+                // cause zachowuje pierwotny SecurityError — widać, co dokładnie
+                // zablokowała przeglądarka.
                 throw new Error('canvas skażony — obrazek bez crossOrigin', { cause: e });
             }
         },
@@ -3754,11 +3664,8 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Czy w pasie jest podpis.
-         *
-         * Produkt może mieć jedną serię zamiast dwóch i wtedy drugi pas jest
-         * pusty — ale nie całkiem: zostaje w nim pionowa oś wykresu. Bez tego
-         * sprawdzenia oś bierze się za tekst.
+         * Czy w pasie jest podpis. Przy jednej serii drugi pas jest pusty poza
+         * pionową osią wykresu — bez tego sprawdzenia oś brałaby się za tekst.
          */
         hasContent(cols) {
             let ink = 0;
@@ -3767,24 +3674,14 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Separator dziesiętny opisuje REGUŁA, a nie bitmapa (8.4.1).
+         * Separator dziesiętny rozpoznaje reguła, a nie bitmapa.
          *
-         * Znalezione na 60 nowych produktach z bestsellerów amazon.de: przy
-         * „€ 12.99” i „€ 12.27” odczyt zwracał „nie przeczytano”, choć wszystkie
-         * cyfry zgadzały się z wzorcami. Przyczyna — kropka szerokości DWÓCH
-         * pikseli zamiast jednego. Keepa rysuje wiersz z subpikselowym
-         * przesunięciem zależnym od jego pełnej szerokości, a wygładzona kropka
-         * raz mieści się w jednej kolumnie, raz rozlewa na dwie. Odczyt czytał
-         * „12..99” i odrzucał wynik jako niepodobny do ceny.
-         *
-         * Wyliczanie bitmap kropki na wszystkie przypadki to ślepa uliczka:
-         * przesunięcie jest ciągłe. Dlatego kropka rozpoznaje się po tym, czym
-         * w tym foncie JEST: kolejne kolumny, w których atrament stoi TYLKO
-         * w dolnym wierszu znaku. Żadna cyfra się pod to nie podszywa — wszystkie
-         * zajmują pełną wysokość — więc reguła nie może przechwycić cudzego glifu.
-         *
-         * Długość ograniczona do dwóch kolumn: dłuższy ogon u dołu to już nie
-         * separator, tylko podkreślenie albo linia siatki.
+         * Keepa rysuje wiersz z przesunięciem subpikselowym, więc wygładzona
+         * kropka ma raz jedną, raz dwie kolumny — wzorzec by jej nie złapał.
+         * Kropka to kolejne kolumny z atramentem wyłącznie w dolnym wierszu
+         * znaku; cyfry zajmują pełną wysokość, więc reguła nie przechwyci
+         * cudzego glifu. Najwyżej dwie kolumny — dłuższy ogon to podkreślenie
+         * albo siatka.
          *
          * @returns {number} ile kolumn zjeść (0 — to nie separator)
          */
@@ -3800,19 +3697,13 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Rozbiór wiersza oknem przesuwnym.
+         * Rozbiór wiersza oknem przesuwnym. Segmentacja po pustych kolumnach
+         * nie działa, bo sąsiednie glify się sklejają („90” to jeden blok).
          *
-         * Dlaczego nie segmentacja po pustych kolumnach: sąsiednie glify SIĘ
-         * SKLEJAJĄ („90” w „17.90” idzie jednym blokiem szerokości 10)
-         * i granic po odstępach nie da się znaleźć. Okno przesuwne od sklejania
-         * nie zależy.
-         *
-         * Dlaczego bierze się najdłuższy pasujący rozbiór: na lewo od ceny stoi
-         * podpis serii i znak „€”, a one nie zgadzają się z żadnym wzorcem cyfry,
-         * więc rozbiór z ich pozycji nie dochodzi do końca wiersza. Przejście po
-         * wszystkich startach i wybór najdłuższego wyniku zdejmuje pytanie
-         * o granicę słowa. To właśnie naprawia utratę najstarszego rzędu: bez
-         * tego „15.51” czytało się jako „5.51”, a „11.89” jako „1.89”.
+         * Wygrywa najdłuższy pełny rozbiór ze wszystkich pozycji startowych:
+         * podpis serii i „€” na lewo od ceny nie pasują do żadnej cyfry, więc
+         * rozbiór od nich nie dochodzi do końca, a start od środka ceny
+         * zgubiłby najstarszy rząd („15.51” jako „5.51”).
          */
         readPrice(cols) {
             const L = cols.length;
@@ -3848,41 +3739,28 @@ const SCRIPT_LOGS_ENABLED = false;
                 const t = parseFrom(s);
                 if (!t) continue;
                 const d = this.toDecimal(t);
-                // Długość porównuje się po SUROWYM rozbiorze, a nie po liczbie:
-                // to właśnie ona odróżnia „2.991.39” od jego własnego kawałka „991.39”.
+                // Długość surowego rozbioru, a nie liczby: odróżnia „2.991.39”
+                // od jego kawałka „991.39”.
                 if (d && t.length > bestRaw.length) { best = d; bestRaw = t; }
             }
             return best;
         },
 
         /**
-         * SEPARATOR TYSIĘCY (9.1.1) — poprawka cichej utraty najstarszego rzędu.
+         * Surowy rozbiór na liczbę dziesiętną, z separatorem tysięcy.
          *
-         * Złapane na B091FXSL4P (FLUKE networks Advanced-Kit): Keepa drukuje
-         * „€ 2,991.39”, a odczyt zwracał „991.39”. Błąd 2000 € na jednym
-         * przedmiocie, po cichu, z pozoru wiarygodną liczbą.
+         * Przecinek w pasie legendy wygląda jak kropka (jego ogon jest pod
+         * pasem), więc „€ 2,991.39” przychodzi jako „2.991.39”. Rozstrzyga
+         * pozycja: separator dziesiętny jest zawsze ostatni, wszystko na lewo
+         * to grupowanie rzędów — tak samo dla „2,991.39” i „2.991,39”. Gdyby
+         * forma z tysiącami była odrzucana, najdłuższym poprawnym rozbiorem
+         * zostałby kawałek „991.39” — cena zaniżona o 2000 €, po cichu.
          *
-         * Mechanizm. Przecinek-separator w pasie legendy wygląda jak kropka
-         * (jego ogon schodzi PONIŻEJ znaku i w pas nie wchodzi), więc dotRun()
-         * uczciwie czytał „2.991.39”. Poprzednie sprawdzenie `^\d{1,5}\.\d{2}$`
-         * taki łańcuch odrzucało — są w nim dwie kropki — po czym reguła
-         * „bierzemy najdłuższy pasujący rozbiór” wybierała „991.39”, bo TEN
-         * kawałek sprawdzenie przechodził. Czyli odrzucenie poprawnej odpowiedzi
-         * prowadziło nie do odmowy, tylko do wydania obciętej.
-         *
-         * Dlaczego rozstrzyga pozycja, a nie rozpoznanie przecinka. Przecinek od
-         * kropki da się odróżnić — ma ogon pod wierszem. Ale to zbędne: cena ma
-         * dokładnie jeden separator dziesiętny i jest on zawsze OSTATNI.
-         * Wszystko na lewo to grupowanie rzędów. Reguła nie zależy od tego, który
-         * znak jest który, więc tak samo poprawnie rozbiera angielskie
-         * „2,991.39” i niemieckie „2.991,39”: oba przyjdą tu jako „2.991.39”
-         * i oba dadzą 2991.39.
-         *
-         * Grupa sztywno po TRZY cyfry — i to jest zabezpieczenie przed śmieciem:
-         * obcinki w rodzaju „.991.39” czy „12.34.56” formy nie przechodzą.
+         * Grupy sztywno po trzy cyfry: obcinki w rodzaju „.991.39” czy
+         * „12.34.56” formy nie przechodzą.
          *
          * @param {string} text — surowy rozbiór, w którym każdy separator to '.'
-         * @returns {string|null} łańcuch typu „2991.39”, nadający się do parseFloat
+         * @returns {string|null} łańcuch typu „2991.39” dla parseFloat
          */
         PRICE_SHAPE: /^\d{1,3}(?:\.\d{3})+\.\d{2}$|^\d{1,5}\.\d{2}$/,
 
@@ -3893,18 +3771,12 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Nazwa serii po kolorze kółka na lewo od podpisu.
-         *
-         * 9.1.1: szukanie zaczyna się od PRICE_OCR_SERIES_FROM_X, a nie od
-         * granicy rozbioru tekstu. Legenda jest wyrównana do prawej i przy
-         * długiej cenie kółko ucieka na lewo od 406 — wtedy seria nie była
-         * rozpoznawana wcale.
-         *
-         * Ceną za szersze okno jest to, że wchodzi w nie kawałek pola wykresu,
-         * więc doszedł warunek NASYCENIA: wypełnienie pod linią ceny to blady
-         * odcień, znacznik to czysty kolor. Pomyłka kosztuje tu tanio: nazwa
-         * serii tylko się pokazuje, a cena wybierana jest PO LICZBIE (patrz
-         * pickHighest), więc na ewidencję nie wpływa.
+         * Nazwa serii po kolorze kółka na lewo od podpisu. Szukanie zaczyna się
+         * od PRICE_OCR_SERIES_FROM_X, bo przy długiej cenie kółko wychodzi na
+         * lewo od granicy tekstu. W szersze okno wchodzi kawałek pola wykresu,
+         * stąd warunek nasycenia (wypełnienie jest blade, znacznik czysty).
+         * Pomyłka jest tania: nazwa serii tylko się pokazuje, a cenę wybiera
+         * pickHighest po liczbie.
          */
         seriesOf(px, y0) {
             const y = y0 + 3;
@@ -3938,14 +3810,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * NAJWYŻSZA cena z wierszy legendy.
-         *
-         * Do ewidencji potrzebna jest cena przedmiotu, a nie najtańsza oferta:
-         * wiersz Amazon prawie zawsze stoi wyżej niż wiersz Neu (na próbkach —
-         * 15,51 wobec 11,49, 10,95 wobec 9,20, 13,95 wobec 10,93). Wybór idzie
-         * PO LICZBIE, a nie po nazwie serii: jeśli wiersza Amazon nie ma wcale,
-         * zostanie Neu, a gdyby Keepa kiedyś zmieniła kolejność — reguła się nie
-         * zepsuje.
+         * Najwyższa cena z wierszy legendy. Do ewidencji liczy się cena
+         * przedmiotu, a nie najtańsza oferta; wiersz Amazon jest zwykle wyżej
+         * niż Neu. Wybór po liczbie, a nie po nazwie serii — działa także bez
+         * wiersza Amazon i przy innej kolejności wierszy.
          */
         pickHighest(rows) {
             let best = null;
@@ -3960,7 +3828,7 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Pełny cykl: wczytać obrazek, rozebrać, zwrócić ceny.
-         * @param {string} [market] — rynek; bez niego bierze się wybrany.
+         * @param {string} [market] - rynek; bez niego bierze się wybrany.
          */
         async read(asin, market) {
             const im = await this.loadImage(asin, undefined, market);
@@ -3975,27 +3843,323 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    /**
+     * ŹRÓDŁA CENY I KURSÓW według kontraktu z nagłówka pliku.
+     *
+     * Zapytanie do amazon.* ze strony T-REX jest niemożliwe (Same-Origin
+     * Policy: zwykły fetch, XHR, no-cors, iframe, script src i widżety
+     * partnerskie są blokowane; Tampermonkey obchodzi to tylko dlatego, że
+     * GM_xmlhttpRequest działa w kontekście rozszerzenia). Dlatego źródła są
+     * pośrednie:
+     *   graph.keepa.com — obrazek wykresu; cena odczytana z pikseli;
+     *   api.keepa.com   — oficjalne API, tylko z płatnym kluczem;
+     *   r.jina.ai       — tekst strony produktu, oddaje nagłówki CORS.
+     */
+    const PriceSources = {
+        /**
+         * Wartości ustawienia `priceCard.source` w kolejności panelu, od
+         * zalecanej. Wartość siedzi w zapisanych ustawieniach i w kodzie
+         * ustawień, więc nowe źródło dostaje nową wartość, a istniejących się
+         * nie przemianowuje. Nową wartość dopisuje się też NA KONIEC
+         * ConfigCode.ENUMS.source — inaczej kod ustawień jej nie przeniesie.
+         *   showsChart — w tym trybie karta pokazuje obrazek wykresu (chart);
+         *   readsImage — cena pochodzi z obrazka, więc blokada img-src znaczy
+         *                „nie ma skąd przeczytać ceny”, a nie „nie ma wykresu”.
+         */
+        modes: [
+            { value: 'ocr',   labelKey: 'priceCard_src_ocr', readsImage: true },
+            { value: 'graph', labelKey: 'priceCard_src_graph', showsChart: true },
+            { value: 'jina',  labelKey: 'priceCard_src_jina' },
+        ],
+
+        /** Opis trybu po wartości ustawienia albo null. */
+        mode(value) { return this.modes.find(m => m.value === value) || null; },
+
+        /** Czy w tym trybie karta pokazuje obrazek wykresu. */
+        showsChart(value) {
+            const m = this.mode(value);
+            return !!(this.chart && m && m.showsChart);
+        },
+
+        /**
+         * Obrazek wykresu do pokazania na karcie albo null, gdy źródła nie
+         * mają wykresu (karta chowa wtedy ramkę i opcje wykresu w panelu).
+         *   url(asin, market) — adres obrazka;
+         *   width, height     — natywny rozmiar obrazka w pikselach;
+         *   legend            — prostokąt z samymi cenami {x, y, w, h}, do
+         *                       trybu „tylko blok z cenami”.
+         * Wartości czytane w chwili rysowania, więc zmiana CONFIG w locie
+         * działa od razu.
+         */
+        chart: {
+            url(asin, market) { return KeepaOCR.url(asin, market); },
+            get width() { return CONFIG.PRICE_KEEPA_PNG_W; },
+            get height() { return CONFIG.PRICE_KEEPA_PNG_H; },
+            get legend() {
+                return {
+                    x: CONFIG.PRICE_KEEPA_LEGEND_X, y: CONFIG.PRICE_KEEPA_LEGEND_Y,
+                    w: CONFIG.PRICE_KEEPA_LEGEND_W, h: CONFIG.PRICE_KEEPA_LEGEND_H,
+                };
+            },
+        },
+
+        /**
+         * Hosty źródeł ceny z dyrektywą CSP, której potrzebują. Blokada na
+         * którymś z nich wyłącza źródła tego rodzaju (PriceCard.csp), a raport
+         * SH.cspReport() sprawdza je po kolei.
+         */
+        cspHosts: {
+            'graph.keepa.com': 'img-src',
+            'r.jina.ai': 'connect-src',
+            'api.keepa.com': 'connect-src',
+        },
+
+        /**
+         * Czy źródła mają dane dla rynku. Keepa dla Polski oddaje pusty wykres:
+         * link działa, ceny nie będzie — panel ostrzega, a przegląd sklepów
+         * takie rynki pomija.
+         */
+        coversMarket(key) {
+            const m = CONFIG.MARKETPLACES[key];
+            return !!(m && m.keepa_ok);
+        },
+
+        /** Kwota w postaci wspólnej dla wszystkich źródeł (Money). */
+        money(value, currency) {
+            return { value, currency, text: `${currency} ${value.toFixed(2)}` };
+        },
+
+        // ---------------- rozbiór odpowiedzi ----------------
+        /**
+         * Kwota w tekście strony. Waluta ze ścisłej listy, a nie [A-Z]{3}
+         * (szeroki wzorzec łapie „UTF 8.00” z parametru ?ie=UTF8), grosze
+         * obowiązkowe (Amazon drukuje zawsze dwa miejsca). Tekst pochodzi
+         * z obcego serwisu, więc wzorzec przepuszcza wyłącznie to, co wygląda
+         * jak kwota — i wyłącznie waluty, które da się przeliczyć (test pilnuje
+         * zgodności z CONFIG.FX_FALLBACK).
+         */
+        MONEY: String.raw`(?:(EUR|USD|GBP|PLN|SEK|CAD)\s?|(€|\$|£|zł)\s?)(\d{1,3}(?:[., ]\d{3})*[.,]\d{2})`,
+
+        /**
+         * Symbol waluty → kod z tablicy kursów. Symbol przepuszczony dalej
+         * jako „waluta” nie miałby kursu i kwota wypadłaby z sumy zmiany.
+         * „$” zależy od rynku: na amazon.ca to dolar kanadyjski.
+         */
+        symbolCode(symbol) {
+            if (symbol === '$') return store.userConfig.marketplace === 'ca' ? 'CAD' : 'USD';
+            return { '€': 'EUR', '£': 'GBP', 'zł': 'PLN' }[symbol] || '';
+        },
+
+        normalize(currency, symbol, amount) {
+            const cur = currency || this.symbolCode(symbol);
+            let a = String(amount).replace(/[ \s]/g, '');
+            const ld = a.lastIndexOf('.'), lc = a.lastIndexOf(',');
+            if (ld >= 0 && lc >= 0) {
+                a = lc > ld ? a.replace(/\./g, '').replace(',', '.') : a.replace(/,/g, '');
+            } else if (lc >= 0) {
+                a = (a.length - lc - 1) === 2 ? a.replace(',', '.') : a.replace(/,/g, '');
+            }
+            const n = parseFloat(a);
+            return isNaN(n) ? null : this.money(n, cur);
+        },
+
+        /**
+         * Rozbiór odpowiedzi r.jina.ai w dwóch trybach. Odpowiedź adresowana
+         * (x-target-selector) to jeden blok ceny i pierwsza kwota jest ceną.
+         * Cała strona (ok. 200 KB) zawiera kilkanaście kwot — tam cenę bierze
+         * się tylko po kotwicy „… with N percent savings”.
+         */
+        parseJina(text, targeted) {
+            const body = text.split('Markdown Content:').pop() || '';
+            const stale = /cached snapshot/i.test(text);
+            // O trybie mówi dostawca (`targeted`), a nie długość ciała — strona
+            // zgody na ciasteczka też jest krótka, a ceny na niej nie ma.
+            const M = this.MONEY;
+
+            const rrpM = body.match(new RegExp(String.raw`(?:RRP|UVP|Statt|List Price):\s*` + M, 'i'));
+            const rrp = rrpM ? this.normalize(rrpM[1], rrpM[2], rrpM[3]) : null;
+
+            const anchored = body.match(new RegExp(M + String.raw`\s+with\s+[\d.,]+\s+percent savings`, 'i'));
+            let current = anchored ? this.normalize(anchored[1], anchored[2], anchored[3]) : null;
+
+            if (!current && targeted) {
+                const m = (body.split(/RRP:|UVP:|List Price:/i)[0]).match(new RegExp(M));
+                if (m) current = this.normalize(m[1], m[2], m[3]);
+            }
+            if (!current && !rrp) return null;
+            return { current, rrp, stale };
+        },
+
+        /**
+         * Wynik rozbioru obrazka do wspólnej postaci. Waluta pochodzi z rynku,
+         * z którego zdjęto cenę — przy przeglądzie sklepów to nie wybrany sklep.
+         */
+        ocrResult(d, market) {
+            const key = market || marketplaceKey();
+            return {
+                current: this.money(d.top.value, marketplace(key).currency),
+                rrp: null,
+                secondary: d.second ? { text: d.second.text } : null,
+                series: d.top.series,
+                market: key,
+                stale: false,
+            };
+        },
+
+        // ---------------- źródła ceny ----------------
+        /** Źródła ceny w kolejności pytania (kontrakt w nagłówku pliku). */
+        list() {
+            const self = this;
+            const jinaUrl = (asin) => `https://r.jina.ai/https://${marketplace().host}/dp/${encodeURIComponent(asin)}`;
+            return [
+                {
+                    /**
+                     * Cena odczytana z obrazka wykresu — pierwsza i domyślna:
+                     * nie wymaga klucza ani obcego proxy, tylko obrazka
+                     * z graph.keepa.com. Działa też w trybie 'graph' (różnica
+                     * to tylko to, czy obrazek się pokazuje), więc dziennik
+                     * napełnia się niezależnie od widoku.
+                     */
+                    name: 'keepa-ocr',
+                    kind: 'image',
+                    get available() {
+                        const pc = store.localTabConfig.priceCard;
+                        return pc.source === 'ocr' || pc.source === 'graph' || !!pc.logValues;
+                    },
+                    // r.jina.ai rozbiera szablon konkretnej witryny — gonienie
+                    // go po obcych rynkach nie ma sensu, więc w trybie 'jina'
+                    // przeglądu sklepów nie ma.
+                    get marketSearch() { return store.localTabConfig.priceCard.source !== 'jina'; },
+                    // Obrazka nie przerywa się sygnałem: limit czasu ma sam
+                    // PriceNet.image(), stąd `_signal` bez użycia.
+                    async run(asin, _signal, market) {
+                        const d = await KeepaOCR.read(asin, market);
+                        return d ? self.ocrResult(d, market) : null;
+                    },
+                },
+                {
+                    // Oficjalne API Keepa: oddaje CORS, wymaga płatnego klucza.
+                    // Z kluczem to najlepsze źródło — dokładna cena bez
+                    // rozbierania szablonu strony.
+                    name: 'keepa-api',
+                    kind: 'text',
+                    get available() { return !!CONFIG.PRICE_KEEPA_API_KEY; },
+                    marketSearch: false,
+                    async run(asin, signal) {
+                        const u = `https://api.keepa.com/product?key=${encodeURIComponent(CONFIG.PRICE_KEEPA_API_KEY)}`
+                                + `&domain=${encodeURIComponent(CONFIG.PRICE_KEEPA_API_DOMAIN)}&asin=${encodeURIComponent(asin)}&stats=1&history=0`;
+                        const r = await PriceNet.request(u, { signal });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        const j = await r.json();
+                        const p = j.products && j.products[0];
+                        if (!p) throw new Error('produktu nie znaleziono');
+                        const cents = (v) => (typeof v === 'number' && v > 0) ? v / 100 : null;
+                        const st = p.stats || {};
+                        const cur = cents(st.current && st.current[1]) ?? cents(st.current && st.current[0]);
+                        const rrp = cents(p.listPrice);
+                        if (cur == null && rrp == null) throw new Error('w odpowiedzi nie ma cen');
+                        const mk = (v) => v == null ? null : self.money(v, 'EUR');
+                        return { current: mk(cur), rrp: mk(rrp), stale: false };
+                    },
+                },
+                {
+                    name: 'jina/blok',
+                    kind: 'text',
+                    get available() { return store.localTabConfig.priceCard.source === 'jina'; },
+                    marketSearch: false,
+                    async run(asin, signal) {
+                        const r = await PriceNet.request(jinaUrl(asin), {
+                            signal,
+                            headers: {
+                                'x-target-selector': CONFIG.PRICE_JINA_SELECTOR,
+                                'x-cache-tolerance': String(CONFIG.PRICE_JINA_CACHE_TOLERANCE_S),
+                            },
+                        });
+                        // 422 = bloku na stronie nie ma (inny szablon, strona
+                        // zgody na ciasteczka) — próbujemy następnego trybu.
+                        if (r.status === 422) throw new Error('nie ma bloku z ceną');
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return self.parseJina(await r.text(), true);
+                    },
+                },
+                {
+                    name: 'jina/strona',
+                    kind: 'text',
+                    get available() { return store.localTabConfig.priceCard.source === 'jina'; },
+                    marketSearch: false,
+                    async run(asin, signal) {
+                        const r = await PriceNet.request(jinaUrl(asin), {
+                            signal,
+                            headers: { 'x-cache-tolerance': String(CONFIG.PRICE_JINA_CACHE_TOLERANCE_S) },
+                        });
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return self.parseJina(await r.text(), false);
+                    },
+                },
+            ];
+        },
+
+        // ---------------- kursy walut ----------------
+        /**
+         * ŹRÓDŁA KURSÓW WALUT, pytane po kolei do pierwszego sukcesu
+         * (FxRates.init). Wszystkie oddają nagłówki CORS i nie wymagają klucza.
+         *   url  — adres zapytania (odpowiedź JSON);
+         *   pick — z odpowiedzi wyciąga { WALUTA: jednostek za 1 EUR };
+         *          resztę sprawdza FxRates.normalize().
+         * Dokładność co do grosza nie jest potrzebna: to szacunek wyniku
+         * zmiany, a nie księgowość.
+         */
+        fxProviders: [
+            { name: 'jsdelivr', url: 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/eur.json',
+              pick: (j) => j && j.eur },
+            { name: 'er-api',   url: 'https://open.er-api.com/v6/latest/EUR',
+              pick: (j) => j && j.rates },
+            // floatrates oddaje kurs łańcuchem („1.15514929”) — stąd Number().
+            { name: 'floatrates', url: 'https://www.floatrates.com/daily/eur.json',
+              pick: (j) => { if (!j) return null; const o = {}; for (const k in j) o[k] = j[k] && Number(j[k].rate); return o; } },
+        ],
+
+        // ---------------- diagnostyka ----------------
+        /**
+         * Sprawdzenia faktyczne do SH.cspReport(): czy obrazek i zapytanie
+         * źródeł naprawdę przechodzą przez politykę strony. Wołane tylko przy
+         * włączonym module cen (PriceNet i tak by odmówił).
+         * @returns {Array<{label: string, run: () => Promise<string>}>}
+         */
+        probes() {
+            return [
+                {
+                    label: 'obrazek Keepa',
+                    // Sam fakt załadowania — piksele niepotrzebne, więc bez crossOrigin.
+                    run: () => PriceNet.image(KeepaOCR.url('B0915C748N'), { timeoutMs: 8000, crossOrigin: null })
+                        .then(im => (im.naturalWidth > 10 ? 'załadowany' : 'pusty'),
+                              e => (/czas/.test(e.message) ? 'przekroczony czas' : 'ZABLOKOWANY')),
+                },
+                {
+                    label: 'zapytanie r.jina.ai',
+                    run: () => PriceNet.request('https://r.jina.ai/https://example.com', {
+                        headers: { 'x-cache-tolerance': '259200' },
+                    }).then(r => 'przeszedł, HTTP ' + r.status, e => 'ZABLOKOWANY (' + e.message + ')'),
+                },
+            ];
+        },
+    };
+
     // ─── src/16-value-log.js ───
     // ==========================================
-    // 6e. DZIENNIK WARTOŚCI (8.4.0)
+    // 6e. DZIENNIK WARTOŚCI
     // ==========================================
     /**
-     * Łączna wartość przedmiotów przetworzonych przez zmianę.
+     * Wartość przedmiotów przetworzonych w ciągu zmiany.
      *
-     * CO SIĘ LICZY. Wyłącznie przedmiot, który przeszedł PEŁNĄ ścieżkę: ten,
-     * na którym zadziałał automatyczny przyrost licznika (pojawiło się
-     * `Przypisz nowy` przy wzniesionej fladze początku). Ani skróty klawiszowe,
-     * ani ręczna poprawka licznika do dziennika nie piszą — ręcznie poprawia się
-     * zwykle właśnie to, czego program nie zobaczył, a ceny do tego i tak nie ma.
+     * Wpis powstaje tylko przy automatycznym zaliczeniu przedmiotu (wyzwalacz
+     * końcowy przy podniesionej fladze). Skróty klawiszowe i ręczne poprawki
+     * licznika do dziennika nie piszą — poprawia się zwykle to, czego program
+     * nie widział, więc i ceny nie ma. Przedmiot przerwany się nie liczy.
      *
-     * Przedmioty przerwane nie liczą się z tego samego powodu, co w liczniku:
-     * `Przypisz nowy` nie zadziałał, nie ma czego liczyć.
-     *
-     * CYKL ŻYCIA — jak u liczników: dziennik żyje jedną zmianę i zeruje się
-     * razem z nimi przy przejściu na nową. Podsumowania idą przy tym do
-     * archiwum (wspólny, nieversjonowany klucz), więc historia nie ginie.
-     *
-     * 9.2.0: dziennik napełnia się TYLKO przy włączonym module cen — patrz add().
+     * Dziennik żyje jedną zmianę i zeruje się razem z licznikami;
+     * podsumowanie trafia do archiwum (klucz wspólny, niezależny od schematu).
+     * Działa tylko z włączonym modułem cen (add()).
      */
     const ValueLog = {
         entries: [],
@@ -4003,48 +4167,37 @@ const SCRIPT_LOGS_ENABLED = false;
         _archiveTimer: null,
         _writeBackTimer: null,
 
-        key() { return StorageManager.getKey(CONFIG.STORAGE_KEY_VALUE_LOG); },
+        key() { return Persistence.getKey(CONFIG.STORAGE_KEY_VALUE_LOG); },
         archiveKey() { return CONFIG.SHARED_ID_PREFIX + CONFIG.STORAGE_KEY_VALUE_ARCHIVE; },
 
-        // ---------------- wspólny dziennik na wszystkie karty (9.1.0) ----------------
+        // ---------------- wspólny dziennik na wszystkie karty ----------------
         /**
-         * DZIENNIK JEST JEDEN NA WSZYSTKIE KARTY I TO GŁÓWNA WŁASNOŚĆ WERSJI 9.1.0.
+         * DZIENNIK JEST JEDEN NA WSZYSTKIE KARTY.
          *
-         * Co było zepsute wcześniej. Dziennik czytało się z localStorage DOKŁADNIE
-         * RAZ, przy starcie, a save() pisała do wspólnego klucza CAŁĄ swoją
-         * tablicę. Dwie otwarte karty (CRET i WHD — normalny tryb pracy) trzymały
-         * dwie niezależne kopie i zamazywały się nawzajem: w kluczu zostawały
-         * wpisy tej karty, która zapisała ostatnia.
+         * Ewidencja idzie po przedmiocie, nie po karcie: ta sama rzecz jedzie
+         * z CRET do WHD (znak minus, −150 €), a potem z karty WHD na sprzedaż
+         * (plus, +150 €). Poprawny wynik — zero — wychodzi tylko wtedy, gdy oba
+         * wpisy leżą w jednym dzienniku.
          *
-         * Dlaczego to ważne właśnie tutaj. Ewidencja jest przekrojowa po
-         * przedmiocie, a nie po karcie: ta sama rzecz jedzie z CRET do WHD (kod
-         * `WHD`, znak minus, −150 €), a potem jest obsługiwana na karcie WHD
-         * i idzie na sprzedaż (znak plus, +150 €). Poprawny wynik to zero i widać
-         * go TYLKO wtedy, gdy oba wpisy leżą w jednym dzienniku.
+         * Klucz localStorage jest źródłem prawdy, pamięć karty — kopią roboczą:
+         *   1. każdy wpis ma niezmienne `id` i znacznik `updated`;
+         *   2. save() czyta wspólny dziennik, scala z nim swoją kopię po id
+         *      (wygrywa świeższy `updated`) i zapisuje scalenie — cudzych
+         *      wpisów nie da się zamazać;
+         *   3. zdarzenie `storage` z sąsiedniej karty woła adoptRemote():
+         *      to samo scalanie w drugą stronę;
+         *   4. gdy po scaleniu mamy coś, czego we wspólnym dzienniku nie ma,
+         *      idzie jeden dopisujący save(); scalanie jest monotoniczne, więc
+         *      wymiana się zbiega;
+         *   5. usunięcie klucza przez sąsiada to reset zmiany — czyścimy kopię.
          *
-         * Jak to zrobiono. Klucz localStorage jest jedynym źródłem prawdy,
-         * a pamięć karty jego kopią roboczą:
-         *
-         *   1. każdy wpis ma NIEZMIENNE `id` i znacznik `updated`;
-         *   2. save() PRZECZYTUJE wspólny dziennik, scala z nim swoją kopię po id
-         *      (przy konflikcie wygrywa świeższy `updated`) i pisze scalenie —
-         *      czyli cudzych wpisów nie da się fizycznie zamazać;
-         *   3. zdarzenie `storage` z sąsiedniej karty wywołuje adoptRemote():
-         *      to samo scalanie, tylko w drugą stronę;
-         *   4. jeśli po scaleniu mamy wpisy, których we wspólnym dzienniku nie ma,
-         *      robi się jeden dopisujący save(). Scalanie jest monotoniczne, więc
-         *      wymiana zbiega się i nie zapętla;
-         *   5. usunięcie klucza przez sąsiada traktuje się jako reset zmiany
-         *      i czyści naszą kopię — nie ma czego wskrzeszać.
-         *
-         * Kolejność pozycji w scaleniu — po czasie (`ts`), a nie po tym, kto
-         * zdążył zapisać: dziennik czyta się oczami.
+         * Pozycje są uporządkowane po czasie (`ts`), nie po kolejności zapisu.
          */
         _migrate(e) {
             if (!e || typeof e !== 'object') return null;
-            // Wpisy sprzed 9.1.0 nie mają id. Nadajemy stabilne, wyprowadzone
-            // z samego wpisu: dwa odczyty tego samego starego dziennika muszą dać
-            // to samo id, inaczej scalanie rozmnoży pozycję.
+            // Wpis bez id (starszy zapis) dostaje id wyprowadzone z samego
+            // wpisu: dwa odczyty tego samego dziennika muszą dać to samo id,
+            // inaczej scalanie rozmnoży pozycję.
             if (!e.id) e.id = `v90_${e.ts || 0}_${e.asin || 'noasin'}_${e.dept || '?'}`;
             if (typeof e.updated !== 'number') e.updated = e.ts || 0;
             return e;
@@ -4065,27 +4218,13 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Czy po scaleniu mamy coś, czego we wspólnym dzienniku nie ma.
+         * Czy po scaleniu mamy coś, czego we wspólnym dzienniku nie ma —
+         * nowy wpis albo świeższą wersję istniejącego.
          *
-         * Wcześniej rozstrzygała o tym sama DŁUGOŚĆ: `merged.length >
-         * shared.entries.length`. Gubiło to przypadek, w którym liczba pozycji
-         * się zgadza, a różni się ich TREŚĆ — czyli dokładnie skutek wyścigu
-         * przy odczycie i zapisie wspólnego klucza (localStorage nie daje tu
-         * żadnej atomowości):
-         *
-         *   1. stawiamy kierunek przedmiotu, save() czyta wspólny dziennik;
-         *   2. sąsiednia karta zdążyła w tej szparze zapisać swoją, starszą
-         *      wersję tej samej pozycji;
-         *   3. dostajemy zdarzenie `storage`, scalamy — nasza wersja wygrywa
-         *      po `updated`, ale długość się zgadza, więc dopisanie się nie
-         *      planowało i we wspólnym kluczu zostawała wersja starsza.
-         *
-         * Naprawiało się to samo przy następnym przedmiocie (save() scala),
-         * więc realnie zagrożony był wyłącznie OSTATNI przedmiot zmiany — ten,
-         * po którym nic już nie zapisywało. Cicho i akurat na podsumowaniu.
-         *
-         * Teraz porównanie idzie po id i po `updated`: to ta sama miara, którą
-         * rozstrzyga _merge(), więc obie strony wymiany widzą tak samo.
+         * Porównanie po id i `updated` (ta sama miara co w _merge), a nie po
+         * długości: przy wyścigu zapisów liczba pozycji się zgadza, a różni się
+         * treść — wtedy we wspólnym kluczu zostałaby starsza wersja, np.
+         * ostatniego przedmiotu zmiany bez kierunku.
          */
         _aheadOfShared(merged, sharedEntries) {
             const theirs = new Map();
@@ -4125,11 +4264,13 @@ const SCRIPT_LOGS_ENABLED = false;
                 localStorage.setItem(this.key(), JSON.stringify({
                     shiftStart: this.shiftStart, entries: merged,
                 }));
-                // Pamięć „nie pisz tego samego” żyje w StorageManager i o tym
-                // kluczu nic nie wie — zdejmujemy notatkę, żeby nie przeszkodziła
-                // sąsiedniej karcie przy następnym zapisie.
-                delete StorageManager._lastWritten[this.key()];
-            } catch (e) { Utils.error('Dziennik wartości nie został zapisany', e); }
+                // Ten klucz pisze się z pominięciem Persistence.write —
+                // notatka deduplikacji dla niego byłaby nieaktualna.
+                delete Persistence._lastWritten[this.key()];
+            } catch (e) {
+                Utils.error('Dziennik wartości nie został zapisany', e);
+                Persistence.reportWriteFailure();
+            }
             this.scheduleArchive();
             bus.emit('valueLog:changed');
         },
@@ -4163,25 +4304,27 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Dopisać do wspólnego dziennika nasze wpisy, których sąsiad nie widział.
-         * Przerwa jest potrzebna tylko po to, żeby skleić paczkę zdarzeń
-         * `storage`; sam zapis jest bezpieczny w dowolnym momencie, bo save()
-         * scala.
+         * Przerwa tylko skleja paczkę zdarzeń `storage` — sam zapis jest
+         * bezpieczny zawsze, bo save() scala.
          */
         _scheduleWriteBack() {
             clearTimeout(this._writeBackTimer);
             this._writeBackTimer = setTimeout(() => { this._writeBackTimer = null; this.save(); }, 400);
         },
+        /** Czekające dopisanie wykonać od razu — przy wyjściu ze strony. */
+        flushWriteBack() {
+            if (!this._writeBackTimer) return;
+            clearTimeout(this._writeBackTimer);
+            this._writeBackTimer = null;
+            this.save();
+        },
 
         // ---------------- archiwum ----------------
         /**
-         * Archiwum trzyma tylko PODSUMOWANIA zmian, nie pozycje: pełna lista
-         * z dziesiątek zmian nie zmieściłaby się w localStorage dzielonym
-         * z samą aplikacją TREX. Dla bieżącej zmiany pozycje są w entries.
-         *
-         * 9.1.0: zapis jest odroczony. Wcześniej writeArchive() szła przy KAŻDYM
-         * wywołaniu save(), czyli dwa razy na przedmiot (utworzenie wpisu
-         * i postawienie znaku), a za każdym razem był to rozbiór i złożenie
-         * całego archiwum na 60 zmian.
+         * Archiwum trzyma same podsumowania zmian — pełne listy nie
+         * zmieściłyby się w localStorage dzielonym z T-REX. Zapis jest
+         * odroczony: save() idzie dwa razy na przedmiot, a każdy zapis archiwum
+         * to rozbiór i złożenie 60 zmian.
          */
         scheduleArchive() {
             clearTimeout(this._archiveTimer);
@@ -4236,14 +4379,11 @@ const SCRIPT_LOGS_ENABLED = false;
 
         // ---------------- wpisy ----------------
         /**
-         * Zapisuje zrobiony przedmiot. price może być null — dopisze się później.
+         * Zapisuje zrobiony przedmiot; price może być null — dopisze się później.
+         * Bez modułu cen nic nie zapisuje: wszystkie pozycje byłyby bez ceny.
          *
-         * 9.2.0: pierwszy warunek to moduł cen. Przy wyłączonym module wszystkie
-         * pozycje i tak byłyby bez ceny, a dziennik pełen pustych wpisów tylko
-         * zaśmiecałby localStorage i mylił w podsumowaniu.
-         *
-         * @returns {string|null} id wpisu (nie indeks: po scaleniu z cudzymi
-         *   wpisami kolejność w tablicy się zmienia i indeks przestaje być adresem).
+         * @returns {string|null} id wpisu (nie indeks — scalanie z cudzymi
+         *   wpisami zmienia kolejność w tablicy).
          */
         add(asin, priceObj, dept) {
             if (!priceModuleOn()) return null;
@@ -4265,20 +4405,16 @@ const SCRIPT_LOGS_ENABLED = false;
                 dept: dept || store.currentTabInstanceId || '?',
                 ts: now,
                 /**
-                 * ZNAK KIERUNKU (9.0.0):
-                 *    +1 — przedmiot poszedł na sprzedaż, wartość idzie na plus;
-                 *    -1 — poszedł do utylizacji, wartość idzie na minus;
-                 *     0 — kierunek TAK I NIE ZOSTAŁ USTALONY.
-                 *
-                 * Zero nie jest błędem ani „jeszcze nie policzyliśmy”: to uczciwe
-                 * „kod sortowania nie pojawił się do początku następnego
-                 * przedmiotu”. Taki wpis nie idzie ani na plus, ani na minus, ale
-                 * widać go osobnym licznikiem, żeby było jasne, że ustalono 112
-                 * ze 113, a nie że suma jest zaniżona nie wiadomo czemu.
+                 * Znak kierunku:
+                 *    +1 — sprzedaż, wartość na plus;
+                 *    -1 — utylizacja, wartość na minus;
+                 *     0 — kierunek nieustalony (kod nie przyszedł przed
+                 *         następnym przedmiotem albo audyt). Nie wchodzi do
+                 *         sum, ale jest liczony osobno (`?N` w linii 6).
                  */
                 sign: 0,
                 route: null,      // sam kod sortowania, do analizy po fakcie
-                updated: now,     // 9.1.0: po nim rozstrzyga się konflikt kart
+                updated: now,     // po nim rozstrzyga się konflikt kart
             };
             this.entries.push(entry);
             this.save();
@@ -4312,10 +4448,8 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Dopisuje cenę przedmiotowi, który skończył się wcześniej, niż ona
-         * przyjechała. W praktyce rzadkość — obrazek Keepa odpowiada w dziesiątki
-         * milisekund, a przedmiot obsługuje się minutami — ale jeśli sieć zwalnia,
-         * pozycji tracić nie wolno.
+         * Dopisuje cenę przedmiotom, które skończyły się, zanim ona przyszła
+         * (wolna sieć, przegląd sklepów).
          */
         fillPending(asin, priceObj) {
             if (!asin || !priceObj || typeof priceObj.value !== 'number') return 0;
@@ -4335,22 +4469,16 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Podsumowanie zmiany — trzy liczby w EURO, po WSZYSTKICH kartach naraz.
+         * Podsumowanie zmiany w euro, po wszystkich kartach. Każda cena
+         * przechodzi przez FxRates.toEur — funtów i dolarów nie dodaje się
+         * do euro.
          *
-         * Wszystko sprowadza się do euro (FxRates): funtów z co.uk i dolarów
-         * z com nie wolno dodawać do euro, a trzymać wyniku w pięciu walutach dla
-         * wskaźnika „ile wyrobiłem na zmianie” nie ma sensu.
-         *
-         * Liczy się oddzielnie:
          *   sold   — wartość sprzedanego (znak +1);
-         *   unsold — wartość tego, co poszło do utylizacji (znak -1), jako liczba
-         *            DODATNIA: znak dopisuje się przy pokazywaniu, tak wygodniej
-         *            liczyć;
-         *   net    — różnica, i to jest wynik zmiany.
+         *   unsold — wartość utylizacji (znak -1), jako liczba dodatnia;
+         *   net    — różnica, czyli wynik zmiany.
          *
-         * Wpisy bez ceny i bez kursu do sum nie wchodzą i liczone są osobno:
-         * po cichu zaniżać wyniku nie wolno, to to samo kłamstwo, tylko w drugą
-         * stronę.
+         * Wpisy bez ceny i bez kursu nie wchodzą do sum i są liczone osobno,
+         * żeby zaniżona suma miała widoczną przyczynę.
          */
         totals() {
             let sold = 0, unsold = 0, soldN = 0, unsoldN = 0;
@@ -4378,7 +4506,7 @@ const SCRIPT_LOGS_ENABLED = false;
             this.entries = [];
             this.shiftStart = store.sessionConfig.shiftCalculatedStartTime || null;
             try { localStorage.removeItem(this.key()); } catch (e) { /* nie ma czego usuwać albo magazyn niedostępny — i tak czyścimy stan w pamięci */ }
-            delete StorageManager._lastWritten[this.key()];
+            delete Persistence._lastWritten[this.key()];
             Utils.log(`[DZIENNIK] wyczyszczony: ${reason}`);
             bus.emit('valueLog:changed');
         },
@@ -4413,52 +4541,36 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/17-fx-rates.js ───
     // ==========================================
-    // 6f. KURSY WALUT (9.0.0)
+    // 6f. KURSY WALUT
     // ==========================================
     /**
-     * Sprowadza dowolną walutę do euro.
+     * Przeliczanie walut przez euro.
      *
-     * PO CO. Cena przychodzi w walucie rynku, z którego została zdjęta: funty
-     * z co.uk, dolary z com, korony ze se, złote z pl. Trzymać wyniku zmiany
-     * w pięciu walutach nie ma sensu, dodawać ich wprost to kłamstwo. Dlatego
-     * wszystko sprowadza się do euro.
+     * Cena przychodzi w walucie rynku (funty z co.uk, dolary z com, korony
+     * ze se); dodawać ich wprost nie wolno, więc wszystko sprowadza się do euro.
+     * Kursy pobiera się raz i trzyma dobę we wspólnym magazynie — kurs przez
+     * zmianę nie przesunie się na tyle, żeby było to widać w wyniku (w odróżnieniu
+     * od ceny produktu, pytanej przy każdym przedmiocie).
      *
-     * Kursy brane są raz z otwartego źródła i kładzione do wspólnego
-     * (nieversjonowanego) magazynu na dobę. To NIE jest sprzeczne z rezygnacją
-     * z pamięci cen w 8.5.0: cena produktu zmienia się w ciągu dnia i musi być
-     * czytana na nowo przy każdym przedmiocie, a kurs waluty przez jedną zmianę
-     * nie przesunie się na tyle, żeby było to widać w szacunku „ile wyrobiłem”.
-     *
-     * 9.2.0 — NAJWAŻNIEJSZA ZMIANA W TYM MODULE.
-     *
-     * Przy wyłączonym module cen kursy NIE SĄ POBIERANE. Zamiast tego bierze się
-     * to, co już leży w localStorage, a jeśli nie leży nic — tablicę wpisaną
-     * w plik (CONFIG.FX_FALLBACK). Zero ruchu w sieci.
-     *
-     * Wejście do sieci jest dokładnie w jednym miejscu: init() wywołane po tym,
-     * jak człowiek zaznaczył „Włącz moduł cen”.
+     * Przy wyłączonym module cen kursów się nie pobiera: bierze się te z
+     * localStorage, a gdy ich nie ma — CONFIG.FX_FALLBACK. Do sieci wychodzi
+     * tylko init() po ręcznym włączeniu modułu.
      */
     const FxRates = {
         rates: null,        // { USD: 1.156, GBP: 0.856, ... } — jednostek za 1 EUR
         source: null,       // nazwa źródła albo 'wbudowane'
         fetchedAt: null,
-        offline: false,     // 9.2.0: true = kursy wzięte bez dotykania sieci
+        offline: false,     // true = kursy wzięte bez dotykania sieci
 
         key() { return CONFIG.SHARED_ID_PREFIX + CONFIG.STORAGE_KEY_FX_RATES; },
 
         /**
-         * Normalizuje odpowiedź dostawcy do { WALUTA: liczba }.
+         * Normalizuje odpowiedź dostawcy do { WALUTA: liczba }. Kurs może
+         * przyjść łańcuchem („1.15514929” u floatrates).
          *
-         * 9.1.0: liczba przyjmowana jest też ŁAŃCUCHEM. Poprzednie sprawdzenie
-         * `typeof v === 'number'` po cichu odrzucało floatrates, który oddaje
-         * kurs jako „1.15514929”, — tablica wychodziła pusta, sprawdzenie USD nie
-         * przechodziło i trzecie źródło nie zadziałało ANI RAZU przez cały czas
-         * swojego istnienia.
-         *
-         * To jest zarazem granica zaufania do odpowiedzi z sieci: wchodzi tu
-         * dowolny JSON z cudzego serwera, a wychodzi wyłącznie płaska tablica
-         * dodatnich, skończonych liczb pod kluczami podniesionymi do wielkich
-         * liter. Nic innego dalej nie przejdzie.
+         * Granica zaufania do sieci: wchodzi dowolny JSON z cudzego serwera,
+         * wychodzi wyłącznie płaska tablica dodatnich, skończonych liczb pod
+         * kluczami wielkimi literami.
          */
         normalize(raw) {
             if (!raw || typeof raw !== 'object') return null;
@@ -4469,8 +4581,8 @@ const SCRIPT_LOGS_ENABLED = false;
                 if (typeof v === 'number' && isFinite(v) && v > 0) out[k.toUpperCase()] = v;
             }
             out.EUR = 1;
-            // Minimalne sprawdzenie zdrowego rozsądku: dolar do euro nigdy nie był
-            // ani trzy razy droższy, ani trzy razy tańszy. Krzywą odpowiedź lepiej
+            // Sprawdzenie zdrowego rozsądku: dolar do euro nie jest ani trzy
+            // razy droższy, ani trzy razy tańszy. Krzywą odpowiedź lepiej
             // odrzucić, niż policzyć po niej całą zmianę.
             if (!out.USD || out.USD < 0.3 || out.USD > 3) return null;
             return out;
@@ -4504,12 +4616,9 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * TRYB BEZ SIECI (9.2.0) — to właśnie wykonuje się przy starcie skryptu.
-         *
-         * Bierze kursy z localStorage, jeśli tam leżą i nie są przeterminowane,
-         * a w przeciwnym razie tablicę wpisaną w plik. W obu przypadkach ani
-         * jednego zapytania. Braku kursów nie zgłasza jako błędu, bo przy
-         * wyłączonym module cen to jest stan normalny, a nie awaria.
+         * Tryb bez sieci — wykonuje się przy starcie. Kursy z localStorage,
+         * jeśli są świeże, inaczej tablica wbudowana; ani jednego zapytania.
+         * Brak kursów nie jest błędem — przy wyłączonym module to stan normalny.
          */
         initOffline() {
             if (this.loadCached()) {
@@ -4526,8 +4635,8 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Pobranie kursów z sieci. Wywoływane WYŁĄCZNIE po ręcznym włączeniu
-         * modułu cen — sprawdzenie na początku jest ostatnią linią obrony.
+         * Pobranie kursów z sieci — tylko po ręcznym włączeniu modułu cen;
+         * sprawdzenie na początku jest ostatnią linią obrony.
          */
         async init() {
             if (!priceModuleOn()) return this.initOffline();
@@ -4537,11 +4646,11 @@ const SCRIPT_LOGS_ENABLED = false;
                         + `${Math.round((Date.now() - this.fetchedAt) / 3600000)} h`);
                 return this.rates;
             }
-            for (const p of CONFIG.FX_PROVIDERS) {
+            for (const p of PriceSources.fxProviders) {
                 try {
                     const ctl = new AbortController();
                     const timer = setTimeout(() => ctl.abort(), CONFIG.FX_TIMEOUT_MS);
-                    const r = await fetch(p.url, { signal: ctl.signal, cache: 'no-store' });
+                    const r = await PriceNet.request(p.url, { signal: ctl.signal, cache: 'no-store' });
                     clearTimeout(timer);
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     const norm = this.normalize(p.pick(await r.json()));
@@ -4568,6 +4677,63 @@ const SCRIPT_LOGS_ENABLED = false;
             const rate = table[cur];
             if (!rate || !isFinite(rate) || rate <= 0) return null;
             return value / rate;      // w tablicy — jednostek waluty za 1 EUR
+        },
+
+        /**
+         * Euro na walutę wyświetlania — odwrotność toEur, ta sama tablica.
+         *
+         * @returns {number|null} kwota albo null, jeśli kursu nie ma (wtedy
+         *   wywołujący zostaje przy euro, a nie pokazuje zera).
+         */
+        fromEur(eur, currency) {
+            if (typeof eur !== 'number' || !isFinite(eur)) return null;
+            const cur = String(currency || 'EUR').toUpperCase();
+            if (cur === 'EUR') return eur;
+            const table = this.rates || CONFIG.FX_FALLBACK;
+            const rate = Object.prototype.hasOwnProperty.call(table, cur) ? table[cur] : null;
+            if (!rate || !isFinite(rate) || rate <= 0) return null;
+            return eur * rate;
+        },
+
+        /**
+         * Waluta wyświetlania albo null, czyli „jak w sklepie”.
+         *
+         * Wartość przychodzi z localStorage, więc może być czymkolwiek:
+         * `'__proto__'`, `'XYZ'`, liczbą. Przechodzi wyłącznie 'native' albo
+         * klucz własny CONFIG.DISPLAY_CURRENCIES — wszystko inne to wartość
+         * domyślna (euro), a nie ciche przejście na waluty sklepów.
+         */
+        displayCurrency() {
+            const own = (c) => typeof c === 'string'
+                && Object.prototype.hasOwnProperty.call(CONFIG.DISPLAY_CURRENCIES, c);
+            const cur = store.userConfig && store.userConfig.displayCurrency;
+            if (cur === 'native') return null;
+            if (own(cur)) return cur;
+            return own(DEFAULT_USER_CONFIG.displayCurrency) ? DEFAULT_USER_CONFIG.displayCurrency : null;
+        },
+
+        /**
+         * Kwota w dowolnej walucie pokazana w walucie wyświetlania.
+         *
+         * `≈` stoi wtedy, gdy kwota została przeliczona: kurs jest dzienny,
+         * a bez sieci — wbudowany, więc to szacunek, nie cena z Amazonu. Ta
+         * sama waluta co w sklepie idzie bez znaku, bo niczego nie liczono.
+         *
+         * @returns {string|null} tekst albo null, gdy wybrano „jak w sklepie”
+         *   lub nie ma kursu — wtedy wywołujący pokazuje cenę tak, jak przyszła.
+         */
+        display(value, currency) {
+            const cur = this.displayCurrency();
+            if (!cur) return null;
+            const from = String(currency || 'EUR').toUpperCase();
+            const v = from === cur ? value : this.fromEur(this.toEur(value, from), cur);
+            if (typeof v !== 'number' || !isFinite(v)) return null;
+            return (from === cur ? '' : '≈ ') + this.money(v, cur);
+        },
+
+        /** `12.50 zł` — znak po kwocie, jak w linii 6. */
+        money(value, currency) {
+            return `${value.toFixed(2)} ${CONFIG.DISPLAY_CURRENCIES[currency] || currency}`;
         },
 
         brief() {
@@ -4600,20 +4766,18 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/18-routing.js ───
     // ==========================================
-    // 6g. DOKĄD POJECHAŁ PRZEDMIOT (9.0.0)
+    // 6g. DOKĄD POJECHAŁ PRZEDMIOT
     // ==========================================
     /**
      * Ustala, czy przedmiot został sprzedany, czy wysłany do utylizacji,
      * po kodzie sortowania.
      *
-     * DLACZEGO TO OSOBNY AUTOMAT, A NIE SPRAWDZENIE W MOMENCIE ZAKOŃCZENIA.
-     * Kod pojawia się na ekranie kiedy chce: przed wyzwalaczem końcowym, razem
-     * z nim albo już po — byle przed początkiem następnego przedmiotu. Znaczy to,
-     * że moment „poznaliśmy kierunek” i moment „przedmiot zaliczony” są
-     * niezależne, a ich kolejność dowolna. Stąd dwie połowy stanu — zakończenie
-     * i kierunek — oraz wpis do dziennika dopisywany wstecz.
+     * Osobny automat, a nie sprawdzenie w chwili zakończenia: kod przychodzi
+     * przed wyzwalaczem końcowym, razem z nim albo po nim — byle przed
+     * następnym przedmiotem. „Kierunek znany” i „przedmiot zaliczony” to dwie
+     * niezależne połowy stanu, a wpis do dziennika uzupełnia się wstecz.
      *
-     * CZTERY SCENARIUSZE, KTÓRE TO POKRYWA:
+     * Scenariusze:
      *   1. kod przyszedł PO +1  -> dopisujemy znak istniejącemu już wpisowi;
      *   2. kod przyszedł PRZED +1 -> czekamy, znak stawiamy przy tworzeniu wpisu;
      *   3. kod i +1 w jednej klatce -> kolejność wewnątrz scan() gwarantuje, że
@@ -4621,25 +4785,18 @@ const SCRIPT_LOGS_ENABLED = false;
      *   4. kodu nie było wcale -> wpis zostaje neutralny (sign 0), do sumy nie
      *      wchodzi, ale widać go w linii 6 jako „?N”.
      *
-     * DLACZEGO LICZY SIĘ WYSTĄPIENIA, A NIE ZWYKŁE `test()`.
-     * Na ekranie jest dziennik, w którym kod wisi dalej po tym, jak zadziałał.
-     * Proste sprawdzenie „czy kod jest w tekście” doczepiałoby stary kod do
-     * następnego przedmiotu. Dlatego zapamiętuje się LICZBĘ wystąpień każdego
-     * kodu, a zadziałanie liczy się dopiero wtedy, gdy ona WZROSŁA — czyli kod
-     * pojawił się na nowo. Ta sama sztuczka przeżywa dwa jednakowe kody pod rząd,
-     * czego nie wytrzymałoby proste „było/nie było”.
+     * Liczy się wystąpienia kodów, a nie samo „jest w tekście”: na ekranie
+     * wisi dziennik, w którym stary kod zostaje, i doczepiłby się do
+     * następnego przedmiotu. Kod zadziałał, gdy liczba jego wystąpień wzrosła —
+     * to działa także dla dwóch jednakowych kodów pod rząd.
      */
     const Routing = {
         state: null,        // { completed, entryId, code, direction, pending }
         _prev: null,        // liczniki poprzedniego skanu
         /**
-         * Niezamknięty Secondary-Sorting (9.1.0).
-         *
-         * Odwołanie do stanu przedmiotu, który dostał niejednoznaczny kod i nie
-         * doczekał się jeszcze uściślenia. Żyje ODDZIELNIE od this.state
-         * i przeżywa początek następnego przedmiotu: linia uściślająca czasem
-         * przychodzi już po tym, jak na ekranie zmienił się ASIN, i tracić jej
-         * nie wolno.
+         * Niezamknięty Secondary-Sorting: stan przedmiotu, który dostał kod
+         * niejednoznaczny i czeka na uściślenie. Żyje oddzielnie od this.state
+         * i przeżywa zmianę ASIN — linia uściślająca bywa spóźniona.
          */
         _ambiguous: null,
 
@@ -4667,9 +4824,8 @@ const SCRIPT_LOGS_ENABLED = false;
 
         codeRegex() {
             if (this._re) return this._re;
-            // Ucieczka znaków specjalnych jest tu obowiązkowa, a nie ozdobna:
-            // kody trafiają do wzorca jako tekst, a wzorzec powstaje z łańcucha.
-            // Bez tego kod z kropką albo nawiasem zmieniłby znaczenie wyrażenia.
+            // Ucieczka znaków specjalnych: wzorzec powstaje z łańcucha, a kod
+            // z kropką albo nawiasem zmieniłby znaczenie wyrażenia.
             const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             // Malejąco po długości: inaczej krótki kod przechwyciłby dłuższy,
             // którego jest początkiem.
@@ -4705,7 +4861,7 @@ const SCRIPT_LOGS_ENABLED = false;
          * Nowy przedmiot: zapominamy wszystko, co wiedzieliśmy o poprzednim.
          *
          * @param {string} reason — do konsoli.
-         * @param {{closeAmbiguous?: boolean}} [opts] — closeAmbiguous mówi, że
+         * @param {{closeAmbiguous?: boolean}} [opts] - closeAmbiguous mówi, że
          *   granica przedmiotu jest PRAWDZIWA (pojawiło się `poniżej`) i wiszący
          *   Secondary-Sorting pora zamknąć domyślnie. Zmiana ASIN taką granicą
          *   NIE jest: linia uściślająca może przyjść i po niej.
@@ -4723,14 +4879,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * SECONDARY-SORTING BEZ UŚCIŚLENIA = NIESPRZEDAŻ (9.1.0).
-         *
-         * Reguła jest niesymetryczna i nie jest to uproszczenie, tylko własność
-         * samego systemu: potwierdzenie sprzedażowe `Przedmiot wysłano do
-         * Transfer - Sellable` przychodzi ZAWSZE, a niesprzedażowe `Przedmiot
-         * wysłano do FBATransfer` pojawia się nie za każdym razem. Znaczy to, że
-         * „uściślenia nie było” może znaczyć dokładnie jedno — przedmiot pojechał
-         * nie na sprzedaż.
+         * Secondary-Sorting bez uściślenia to niesprzedaż. Reguła jest
+         * niesymetryczna, bo taki jest system: potwierdzenie sprzedaży
+         * (`Transfer - Sellable`) przychodzi zawsze, a niesprzedaży
+         * (`FBATransfer`) — nie zawsze.
          */
         closeAmbiguous(reason) {
             const a = this._ambiguous;
@@ -4791,13 +4943,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         onConfirm(dir) {
-            // Uściślenie ma sens TYLKO po niejednoznacznym kodzie: linia
-            // „Przedmiot wysłano do ...” występuje też sama z siebie.
-            //
-            // 9.1.0: cel wybiera się jawnie. Zwykle jest to bieżący przedmiot,
-            // ale jeśli już się zmienił, a wisi niezamknięty Secondary-Sorting,
-            // uściślenie dotyczy jego — inaczej linia, która przyszła o pół
-            // sekundy po zmianie ASIN, przepadałaby na darmo.
+            // Uściślenie ma sens tylko po niejednoznacznym kodzie — linia
+            // „Przedmiot wysłano do ...” występuje też sama z siebie. Celem
+            // jest bieżący przedmiot, a gdy ten już się zmienił — wiszący
+            // Secondary-Sorting poprzedniego.
             const target = (this.state && this.state.pending) ? this.state
                          : (this._ambiguous && this._ambiguous.pending) ? this._ambiguous
                          : null;
@@ -4812,11 +4961,9 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Przedmiot zaliczony przez licznik: od tego momentu wolno zastosować sumę.
-         * @param {string|null} entryId — id wpisu dziennika (nie indeks: dziennik
-         *   jest wspólny na wszystkie karty i po scaleniu kolejność się zmienia).
-         *   Przy wyłączonym module cen wpisu nie ma i przychodzi tu `null` —
-         *   kierunek i tak trzeba zaliczyć, bo procent sprzedaży dziennika nie
-         *   potrzebuje.
+         * @param {string|null} entryId — id wpisu dziennika (nie indeks:
+         *   scalanie zmienia kolejność). Bez modułu cen to `null` — kierunek
+         *   i tak się zalicza, bo procent sprzedaży dziennika nie potrzebuje.
          */
         onCompleted(entryId) {
             if (!this.state) this.startItem('zakończenie bez początku');
@@ -4826,63 +4973,43 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * PROCENT SPRZEDAŻY — dwa liczniki, licznik ułamka i odjęcie z mianownika.
+         * PROCENT SPRZEDAŻY — licznik sprzedanych i odjęcie z mianownika.
          *
-         * Liczy się DOKŁADNIE RAZ na przedmiot i dokładnie wtedy, gdy znane są oba
-         * warunki: przedmiot zaliczony przez licznik i kierunek ustalony. Oba
-         * przychodzą niezależnie i w dowolnej kolejności, a `applyTo` woła się po
-         * każdym z nich — bez znacznika `counted` ten sam przedmiot policzyłby
-         * się dwa razy.
+         * Liczy się dokładnie raz na przedmiot, gdy znane są oba warunki:
+         * przedmiot zaliczony i kierunek ustalony. Przychodzą w dowolnej
+         * kolejności, a applyTo woła się po każdym — stąd znacznik `counted`.
          *
-         * MIANOWNIK = zwykły licznik przedmiotów MINUS przedmioty nierozstrzygalne
-         * (1.3.0). Stąd drugi klucz: `tabNeutral`. Skutek widoczny gołym okiem —
-         * zrobionych paczek bywa więcej niż paczek, z których liczy się procent.
+         * Mianownik = licznik przedmiotów minus przedmioty spoza mianownika
+         * (`tabNeutral`). Różnica między audytem a brakiem kodu jest celowa:
+         *   - audyt wypada z mianownika — decyzja zapadnie później i gdzie indziej;
+         *   - brak kodu zostaje w mianowniku — przedmiot gdzieś pojechał, tylko
+         *     skrypt tego nie zobaczył; wyrzucenie go podnosiłoby procent przy
+         *     każdym przeoczeniu.
          *
-         * RÓŻNICA MIĘDZY AUDYTEM A BRAKIEM KODU JEST CELOWA:
-         *   - audyt (`ROUTE_NEUTRAL_CODES`) wypada z mianownika, bo odpowiedź
-         *     „sprzedaż czy nie” zapadnie godziny później, u kogoś innego, i nie
-         *     wróci na ten ekran nigdy;
-         *   - kod, który się nie pojawił, ZOSTAJE w mianowniku, bo to zwykle
-         *     przedmiot, który jednak gdzieś pojechał — tylko my tego nie
-         *     zobaczyliśmy. Wyrzucenie go podnosiłoby procent za każdym razem,
-         *     gdy skrypt coś przeoczy, czyli nagradzałoby własne błędy.
-         *
-         * Dzięki temu „trzy pierwsze przedmioty na niesprzedaż” nadal daje
-         * uczciwe 0%, a nie brak liczby.
-         *
-         * Ręczna poprawka licznika (skróty klawiszowe, przyciski) tu nie wchodzi
-         * — tak samo, jak nie wchodzi do dziennika wartości. Poprawia się zwykle
-         * to, czego program nie zobaczył, a kierunku takiego przedmiotu nikt nie
-         * zna.
+         * Ręczne poprawki licznika tu nie wchodzą — kierunku takiego przedmiotu
+         * nikt nie zna.
          */
         countDirection(st) {
             if (!st || st.counted || !st.completed || !st.direction) return;
             st.counted = true;
             const cid = store.currentTabInstanceId;
-            // Kierunek trafia do dwóch miejsc naraz: do liczników zmiany (linie
-            // 1, 2 i 7) i do bieżącego zadania (linia 8, podsumowanie w panelu).
-            // Jedno wywołanie, dwa zapisy — dzięki temu suma zadań nie ma jak
-            // rozjechać się z licznikiem karty.
+            // Kierunek trafia do liczników zmiany (linie 1, 2, 7) i do
+            // bieżącego zadania (linia 8) w jednym wywołaniu, żeby suma zadań
+            // nie rozjechała się z licznikiem karty. +1 od wartości
+            // w magazynie — dwie karty działu dzielą klucz (freshCount).
             if (st.direction === 'sell') {
-                const next = (store.tabSold[cid] || 0) + 1;
-                store.tabSold[cid] = next;
-                StorageManager.saveSold(cid, next);
+                Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_SOLD, store.tabSold, cid);
                 TaskManager.addSold(cid);
             } else if (st.direction === 'neutral') {
-                const next = (store.tabNeutral[cid] || 0) + 1;
-                store.tabNeutral[cid] = next;
-                StorageManager.saveNeutral(cid, next);
+                Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL, store.tabNeutral, cid);
                 TaskManager.addNeutral(cid);
             }
         },
 
         /**
-         * Zapisuje znak, gdy znane są OBA warunki: przedmiot zaliczony i kierunek
-         * ustalony. Kolejność ich wystąpienia nie ma znaczenia.
-         *
-         * Procent sprzedaży liczy się PRZED sprawdzeniem wpisu dziennika i to
-         * jest sedno: przy wyłączonym module cen wpisu nie ma wcale, a procent
-         * ma działać i wtedy.
+         * Zapisuje znak, gdy znane są oba warunki: przedmiot zaliczony i kierunek
+         * ustalony, w dowolnej kolejności. Procent liczy się przed sprawdzeniem
+         * wpisu dziennika — bez modułu cen wpisu nie ma, a procent ma działać.
          */
         applyTo(st) {
             this.countDirection(st);
@@ -4902,21 +5029,21 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/19-price-module.js ───
     // ==========================================
-    // 6h. WŁĄCZNIK MODUŁU CEN (9.2.0)
+    // 6h. WŁĄCZNIK MODUŁU CEN
     // ==========================================
     /**
      * Dwie operacje: „obudź sieć” i „uśpij sieć”. Woła je wyłącznie panel
      * ustawień oraz konsola (SH.priceOn() / SH.priceOff()).
      *
-     * Sensem tego modułu jest to, że PIERWSZE w całym cyklu życia skryptu
-     * zapytanie do sieci zewnętrznej wychodzi stąd i znikąd indziej. Dopóki
-     * enable() nie zostanie wywołane, ani FxRates, ani KeepaOCR, ani PriceCard
-     * nie mają prawa nawiązać połączenia — i każde z nich sprawdza to samodzielnie.
+     * Pierwsze zapytanie do sieci zewnętrznej wychodzi stąd i znikąd indziej.
+     * Dopóki enable() nie zostanie wywołane, FxRates i PriceCard nie
+     * nawiązują połączeń, a PriceNet — jedyne wyjście do sieci modułu cen —
+     * odmawia; każde z nich sprawdza to samodzielnie.
      */
     const PriceModule = {
         enable() {
             store.localTabConfig.priceCard.moduleEnabled = true;
-            StorageManager.saveState();
+            Persistence.saveState();
             Utils.log('[MODUŁ CEN] włączony ręcznie — od tej chwili zapytania sieciowe są dozwolone.');
             // Kursy walut: jedno zapytanie, dalej z pamięci przez dobę.
             FxRates.init().then(() => bus.emit('valueLog:changed'));
@@ -4927,7 +5054,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
         disable() {
             store.localTabConfig.priceCard.moduleEnabled = false;
-            StorageManager.saveState();
+            Persistence.saveState();
             // Zapytania, które już lecą, dokończą się same — przerwać ich nie
             // ma czym, a nowe już nie wyjdą, bo wszystkie wejścia sprawdzają
             // priceModuleOn(). Pamięć wyników czyścimy, żeby po ponownym
@@ -4945,229 +5072,73 @@ const SCRIPT_LOGS_ENABLED = false;
     /**
      * Pokazuje cenę produktu, który jest właśnie obsługiwany.
      *
-     * DLACZEGO TAK, A NIE PROŚCIEJ. Bezpośredni fetch na amazon.de ze strony
-     * T-REX jest niemożliwy: Same-Origin Policy. Sprawdzone na żywo na obcej
-     * domenie — blokuje się wszystko: zwykły fetch, XMLHttpRequest, no-cors
-     * (oddaje opaque z pustym ciałem), iframe (odczyt rzuca SecurityError),
-     * script src, a nawet widżety partnerskie amazon-adsystem, które niby są
-     * stworzone do osadzania na cudzych stronach. Tampermonkey obchodzi to
-     * wyłącznie dlatego, że GM_xmlhttpRequest wykonuje się w uprzywilejowanym
-     * kontekście rozszerzenia, a nie w stronie.
+     * Skąd przychodzi cena, karta nie wie: pyta źródła z PriceSources według
+     * kontraktu (src/15-price-sources.js), a sama prowadzi to, co wspólne dla
+     * każdego źródła — limity i przerwy między zapytaniami, limit czasu,
+     * przegląd innych sklepów, blokady CSP i rysowanie.
      *
-     * Dlatego źródła są dokładnie dwa:
-     *   r.jina.ai       — oddaje nagłówki CORS, zwraca tekst strony;
-     *   graph.keepa.com — obrazek, a obrazkowi CORS nie jest potrzebny z zasady.
-     *
-     * GŁÓWNA ZASADA: JEDNO ZAPYTANIE NA JEDEN ASIN. Logika ta sama, co
-     * u licznika: `poniżej` daje dokładnie jeden przyrost — nowy ASIN daje
-     * dokładnie jedno wejście do sieci. Pięć jednakowych przedmiotów pod rząd
-     * (klient zwrócił pięć sztuk) odpracuje się jako pięć przedmiotów, ale
-     * zapytanie pójdzie jedno.
-     *
-     * 9.2.0: nad tym wszystkim stoi jeszcze jeden warunek — moduł cen musi być
-     * włączony ręcznie. Dopóki nie jest, ten moduł nie wysyła nic.
+     * Jedno zapytanie na przedmiot, pytane przy nowym ASIN albo na początku
+     * nowego przedmiotu. Nic nie wychodzi, dopóki moduł cen nie zostanie
+     * włączony ręcznie.
      */
     const PriceCard = {
-        // asin -> {status, current, rrp, source, ms}. To nie pamięć cen: cena
-        // pytana jest na nowo przy każdym przedmiocie (8.5.0). To ostatni znany
-        // wynik, rysowany póki leci nowe zapytanie.
-        // 9.1.0: rozmiar ograniczony, patrz _remember().
+        // asin -> {status, current, rrp, source, ms}. To nie pamięć cen (cena
+        // jest pytana przy każdym przedmiocie), tylko ostatni wynik do
+        // rysowania, póki leci nowe zapytanie. Rozmiar ogranicza _remember().
         cache: new Map(),
         inFlight: new Set(),
         shownAsin: null,
-        // ASIN, dla którego właśnie trwa przegląd sklepów (8.6.0).
+        // ASIN, dla którego właśnie trwa przegląd sklepów.
         searchingOther: null,
         awaiting: false,         // zaczął się nowy przedmiot, czekamy na ASIN
         requestCount: 0,
-        // Obrazki Keepa liczą się osobno od zapytań tekstowych: mają własny,
-        // hojniejszy limit (patrz CONFIG.PRICE_MAX_IMAGE_REQUESTS).
+        // Obrazki liczą się osobno od zapytań tekstowych — mają własny limit
+        // (CONFIG.PRICE_MAX_IMAGE_REQUESTS).
         imageCount: 0,
         nextSlotAt: 0,
         el: null,
 
         /**
-         * Content-Security-Policy strony — DRUGA bariera, niezależna od CORS.
-         * Wystawia ją serwer strony nagłówkiem albo meta-tagiem i obejść jej
-         * z kodu strony nie da się w zasadzie: w tym cały sens CSP.
+         * Blokady Content-Security-Policy — druga bariera, niezależna od CORS.
+         * Wystawia ją serwer strony i z kodu strony obejść się jej nie da;
+         * brakujące źródło przeglądarka tnie przed wyjściem w sieć.
          *
-         * Jeśli w polityce nie ma potrzebnego źródła, przeglądarka utnie
-         * zapytanie jeszcze przed wyjściem w sieć. Wikipedia jest tu dobrym
-         * przykładem: nie ma tam ani img-src, ani connect-src, wszystko spada
-         * do `default-src 'self'` i nie ładuje się ani obrazek Keepa, ani
-         * zapytanie do r.jina.ai.
-         *
-         * Zostawiać po cichu pustej ramki nie wolno — człowiek pomyśli, że skrypt
-         * się zepsuł. Przeglądarka sama zgłasza blokadę zdarzeniem
-         * securitypolicyviolation, po nim to rozpoznajemy.
+         * Blokadę zgłasza zdarzenie securitypolicyviolation — po nim karta
+         * mówi, dlaczego ceny nie ma, zamiast zostawić pustą ramkę.
          */
         csp: { img: false, net: false, notified: false },
 
-        // ---------------- rozbiór odpowiedzi ----------------
-        /**
-         * Waluta to ścisła lista, a nie [A-Z]{3}. Złapane na stanowisku: szeroki
-         * wzorzec wyciągnął „UTF 8.00” z linku ?ie=UTF8&nodeId=505048 i pokazał
-         * to jako cenę. Grosze też są obowiązkowe: Amazon zawsze drukuje dwa
-         * miejsca, a wymaganie części dziesiętnej odcina całą klasę śmieci.
-         *
-         * Jest to zarazem filtr bezpieczeństwa: wzorzec pracuje na tekście
-         * ściągniętym z obcego serwisu, więc musi przepuszczać wyłącznie to,
-         * co naprawdę wygląda jak kwota.
-         */
-        MONEY: String.raw`(?:(EUR|USD|GBP|PLN|CHF|SEK|DKK|NOK|CZK|HUF|RON)\s?|(€|\$|£|zł)\s?)(\d{1,3}(?:[., ]\d{3})*[.,]\d{2})`,
-
-        normalize(currency, symbol, amount) {
-            const cur = currency || symbol || '';
-            let a = String(amount).replace(/[ \s]/g, '');
-            const ld = a.lastIndexOf('.'), lc = a.lastIndexOf(',');
-            if (ld >= 0 && lc >= 0) {
-                a = lc > ld ? a.replace(/\./g, '').replace(',', '.') : a.replace(/,/g, '');
-            } else if (lc >= 0) {
-                a = (a.length - lc - 1) === 2 ? a.replace(',', '.') : a.replace(/,/g, '');
-            }
-            const n = parseFloat(a);
-            return isNaN(n) ? null : { value: n, currency: cur, text: `${cur} ${n.toFixed(2)}` };
-        },
-
-        /**
-         * Dwa tryby, a różnica jest zasadnicza. Odpowiedź adresowana
-         * (z x-target-selector) to 350-1800 bajtów jednego bloku ceny i tam
-         * pierwsze trafienie na kwotę jest ceną. Odpowiedź całą stroną to
-         * 180-200 KB i pierwsze trafienie będzie śmieciem: w pomiarze taka
-         * odpowiedź zawierała 12 różnych kwot. Dlatego na długim ciele cenę
-         * bierze się TYLKO po kotwicy „… with N percent savings”.
-         *
-         * Pomiar na trzech produktach, czemu to ważne:
-         *   Philips GU10  adresowo -> 15.08   stroną -> 17.04  (adresowo poprawnie)
-         *   Tineco        oba tryby zgodne
-         *   ARNOMED       adresowo 422, stroną ceny nie ma wcale
-         */
-        parseJina(text, targeted) {
-            const body = text.split('Markdown Content:').pop() || '';
-            const stale = /cached snapshot/i.test(text);
-            // targeted przychodzi od dostawcy. Wcześniej ustalało się po długości
-            // ciała (< 4000) i to kłamało: strona zgody na ciasteczka też jest
-            // krótka, przez co zapasowa ścieżka „pierwsze trafienie” działała tam,
-            // gdzie ceny nie ma w ogóle.
-            const M = this.MONEY;
-
-            const rrpM = body.match(new RegExp(String.raw`(?:RRP|UVP|Statt|List Price):\s*` + M, 'i'));
-            const rrp = rrpM ? this.normalize(rrpM[1], rrpM[2], rrpM[3]) : null;
-
-            const anchored = body.match(new RegExp(M + String.raw`\s+with\s+[\d.,]+\s+percent savings`, 'i'));
-            let current = anchored ? this.normalize(anchored[1], anchored[2], anchored[3]) : null;
-
-            if (!current && targeted) {
-                const m = (body.split(/RRP:|UVP:|List Price:/i)[0]).match(new RegExp(M));
-                if (m) current = this.normalize(m[1], m[2], m[3]);
-            }
-            if (!current && !rrp) return null;
-            return { current, rrp, stale };
-        },
-
-        keepaUrl(asin, market) { return KeepaOCR.url(asin, market); },
-
         // ---------------- źródła ----------------
-        providers() {
-            const self = this;
-            return [
-                {
-                    /**
-                     * Cena odczytana z obrazka wykresu (8.4.0).
-                     *
-                     * Stoi PIERWSZA i jest włączona domyślnie: daje euro
-                     * z niemieckiej witryny, nie wymaga klucza i nie chodzi ani
-                     * na Amazona, ani przez obce proxy — tylko obrazek
-                     * z graph.keepa.com, który skrypt i tak umie wczytać od 8.2.0.
-                     *
-                     * Działa też w trybie 'graph': obrazek jest potrzebny w obu
-                     * przypadkach, różnica polega tylko na tym, czy się go
-                     * pokazuje. Dzięki temu dziennik wartości napełnia się
-                     * niezależnie od wybranego widoku.
-                     */
-                    name: 'keepa-ocr',
-                    get available() {
-                        const pc = store.localTabConfig.priceCard;
-                        // Obrazek tnie CSP — nie ma czego czytać.
-                        if (self.csp.img) return false;
-                        return pc.source === 'ocr' || pc.source === 'graph' || !!pc.logValues;
-                    },
-                    isImage: true,
-                    // Licznik prowadzi pętla w resolve(): dostawca nie powinien
-                    // wiedzieć, jak urządzona jest ewidencja limitów (w 8.4.0-8.5.0
-                    // liczył sam i jego zapytania trafiały DO OBU liczników naraz).
-                    async run(asin, signal, market) {
-                        const d = await KeepaOCR.read(asin, market);
-                        if (!d) throw new Error('cena na wykresie nierozpoznana');
-                        return self.buildOcrResult(d, market);
-                    },
-                },
-                {
-                    // Oficjalne API Keepa. CORS oddaje (sprawdzone: zapytanie
-                    // z obcej domeny zwróciło czytelny JSON), potrzebny jest
-                    // tylko płatny klucz. Gdy klucz się pojawi, stanie się to
-                    // najlepszym źródłem: dokładna cena w euro z niemieckiej
-                    // witryny, bez rozbierania szablonu strony.
-                    name: 'keepa-api',
-                    get available() { return !!CONFIG.PRICE_KEEPA_API_KEY; },
-                    async run(asin, signal) {
-                        const u = `https://api.keepa.com/product?key=${encodeURIComponent(CONFIG.PRICE_KEEPA_API_KEY)}`
-                                + `&domain=${encodeURIComponent(CONFIG.PRICE_KEEPA_API_DOMAIN)}&asin=${encodeURIComponent(asin)}&stats=1&history=0`;
-                        const r = await fetch(u, { signal });
-                        if (!r.ok) throw new Error('HTTP ' + r.status);
-                        const j = await r.json();
-                        const p = j.products && j.products[0];
-                        if (!p) throw new Error('produktu nie znaleziono');
-                        const cents = (v) => (typeof v === 'number' && v > 0) ? v / 100 : null;
-                        const st = p.stats || {};
-                        const cur = cents(st.current && st.current[1]) ?? cents(st.current && st.current[0]);
-                        const rrp = cents(p.listPrice);
-                        if (cur == null && rrp == null) throw new Error('w odpowiedzi nie ma cen');
-                        const mk = (v) => v == null ? null : { value: v, currency: 'EUR', text: `EUR ${v.toFixed(2)}` };
-                        return { current: mk(cur), rrp: mk(rrp), stale: false };
-                    },
-                },
-                {
-                    name: 'jina/blok',
-                    get available() { return store.localTabConfig.priceCard.source === 'jina'; },
-                    async run(asin, signal) {
-                        const r = await fetch(`https://r.jina.ai/https://${marketplace().host}/dp/${encodeURIComponent(asin)}`, {
-                            signal,
-                            headers: {
-                                'x-target-selector': CONFIG.PRICE_JINA_SELECTOR,
-                                'x-cache-tolerance': String(CONFIG.PRICE_JINA_CACHE_TOLERANCE_S),
-                            },
-                        });
-                        // 422 = takiego bloku na stronie nie ma (inny szablon albo
-                        // strona zgody na ciasteczka). To nie awaria łącza, tylko
-                        // powód, żeby spróbować następnego trybu.
-                        if (r.status === 422) throw new Error('nie ma bloku z ceną');
-                        if (!r.ok) throw new Error('HTTP ' + r.status);
-                        return self.parseJina(await r.text(), true);
-                    },
-                },
-                {
-                    name: 'jina/strona',
-                    get available() { return store.localTabConfig.priceCard.source === 'jina'; },
-                    async run(asin, signal) {
-                        const r = await fetch(`https://r.jina.ai/https://${marketplace().host}/dp/${encodeURIComponent(asin)}`, {
-                            signal,
-                            headers: { 'x-cache-tolerance': String(CONFIG.PRICE_JINA_CACHE_TOLERANCE_S) },
-                        });
-                        if (!r.ok) throw new Error('HTTP ' + r.status);
-                        return self.parseJina(await r.text(), false);
-                    },
-                },
-            ];
+        /**
+         * Czy źródło można teraz pytać: włączone w ustawieniach i nie
+         * zablokowane przez CSP. Blokada img-src wyłącza źródła obrazkowe;
+         * blokadę connect-src sprawdza pętla w resolve() przy każdym obiegu.
+         */
+        usable(s) {
+            if (s.available === false) return false;
+            return !(s.kind === 'image' && this.csp.img);
         },
+
+        /** Źródło do przeglądu innych sklepów albo null, gdy żadne się nie nadaje. */
+        marketSearcher() {
+            return PriceSources.list().find(s => s.marketSearch && this.usable(s)) || null;
+        },
+
+        /**
+         * Liczniki i limity idą po rodzaju źródła: obrazki i zapytania
+         * tekstowe mają osobne liczniki i osobne limity.
+         */
+        used(kind) { return kind === 'image' ? this.imageCount : this.requestCount; },
+        cap(kind) {
+            return kind === 'image' ? CONFIG.PRICE_MAX_IMAGE_REQUESTS : CONFIG.PRICE_MAX_REQUESTS_PER_SESSION;
+        },
+        count(kind) { if (kind === 'image') this.imageCount++; else this.requestCount++; },
 
         // ---------------- sieć ----------------
         /**
-         * Przerwa między zapytaniami. 8.3.0: slot rezerwuje się SYNCHRONICZNIE,
-         * przed jakimkolwiek await.
-         *
-         * Wcześniej `lastRequestAt` zapisywało się PO śnie, więc dwa równoległe
-         * resolve() czytały tę samą wartość, spały tyle samo i wychodziły w sieć
-         * w tym samym momencie — przerwy nie było wcale.
+         * Przerwa między zapytaniami. Slot rezerwuje się synchronicznie, przed
+         * pierwszym await — inaczej dwa równoległe resolve() odczytałyby tę
+         * samą wartość i wyszły w sieć jednocześnie.
          */
         respectRateLimit() {
             const now = Date.now();
@@ -5178,12 +5149,8 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Limit czasu zapytania. 8.3.0: timer jest zdejmowany, a sam fetch
-         * przerywany.
-         *
-         * Wcześniej setTimeout nie był czyszczony przy powodzeniu — na każde
-         * zapytanie zostawał wiszący timer na 30 s — a „odpadły po timeoucie”
-         * fetch dalej ciągnął odpowiedź: nie było czym go anulować.
+         * Limit czasu zapytania: po przekroczeniu fetch jest przerywany
+         * (AbortController), a timer zdejmowany w każdym przypadku.
          *
          * @param {(signal: AbortSignal) => Promise} run
          */
@@ -5198,54 +5165,54 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Wynik rozbioru obrazka do wspólnej postaci. Waluta bierze się z TEGO
-         * rynku, z którego zdjęto cenę, a nie z wybranego: przy przeglądzie
-         * sklepów to są różne rzeczy.
+         * Kolejność przeglądu sklepów: rynek z linku na stronie, potem Europa,
+         * na końcu PRICE_FALLBACK_LAST — w obrębie grupy losowo. Bez wybranego
+         * rynku (ten już odpowiedział „nie ma”) i bez rynków, dla których
+         * źródła nie mają danych (PriceSources.coversMarket).
+         *
+         * @param {string} from       rynek już sprawdzony
+         * @param {string|null} hint  rynek z linku do produktu na stronie
+         * @param {function} [random] źródło losowości (testy podają własne)
          */
-        buildOcrResult(d, market) {
-            const key = market || marketplaceKey();
-            const cur = marketplace(key).currency;
-            const mk = (v) => ({ value: v, currency: cur, text: `${cur} ${v.toFixed(2)}` });
-            return {
-                current: mk(d.top.value),
-                rrp: null,
-                secondary: d.second ? { text: d.second.text } : null,
-                series: d.top.series,
-                market: key,
-                stale: false,
+        fallbackOrder(from, hint, random = Math.random) {
+            const shuffle = (list) => {
+                for (let i = list.length - 1; i > 0; i--) {     // tasowanie Fishera-Yatesa
+                    const j = Math.floor(random() * (i + 1));
+                    [list[i], list[j]] = [list[j], list[i]];
+                }
+                return list;
             };
+            const pool = Object.keys(CONFIG.MARKETPLACES)
+                .filter(k => k !== from && k !== hint && PriceSources.coversMarket(k));
+            const late = pool.filter(k => CONFIG.PRICE_FALLBACK_LAST.includes(k));
+            const first = hint && hint !== from && PriceSources.coversMarket(hint) ? [hint] : [];
+            return first
+                .concat(shuffle(pool.filter(k => !late.includes(k))), shuffle(late))
+                .slice(0, CONFIG.PRICE_FALLBACK_MAX_TRIES);
         },
 
         /**
-         * PRZEGLĄD POZOSTAŁYCH SKLEPÓW (8.6.0).
-         *
-         * Wywoływany tylko wtedy, gdy wybrany rynek ceny nie dał. Przechodzi
-         * pozostałe rynki z danymi Keepa w LOSOWEJ kolejności, z sekundową
-         * przerwą, i zwraca pierwszy sukces. Ustawienia sklepu nie rusza: to
-         * jednorazowa próba dla jednego przedmiotu, następny znów zacznie od
-         * wybranego.
-         *
-         * Losowa kolejność nie jest tu ozdobą: przy stałej kolejności całe
-         * pudło zmiany szłoby w jeden i ten sam rynek zapasowy.
+         * PRZEGLĄD POZOSTAŁYCH SKLEPÓW, gdy wybrany rynek ceny nie dał
+         * (zasady: CONFIG.PRICE_FALLBACK_*). Pyta źródło z marketSearcher()
+         * rynek po rynku. Zwraca pierwszy sukces albo null. Wybrany sklep się
+         * nie zmienia — następny przedmiot zaczyna od niego.
          */
         async tryOtherMarkets(asin) {
+            const src = this.marketSearcher();
+            if (!src) return null;
             const from = marketplaceKey();
-            const pool = Object.keys(CONFIG.MARKETPLACES)
-                .filter(k => k !== from && CONFIG.MARKETPLACES[k].keepa_ok);
-            for (let i = pool.length - 1; i > 0; i--) {         // tasowanie Fishera-Yatesa
-                const j = Math.floor(Math.random() * (i + 1));
-                [pool[i], pool[j]] = [pool[j], pool[i]];
-            }
-            const tries = pool.slice(0, CONFIG.PRICE_FALLBACK_MAX_TRIES);
+            const hint = this.linkMarket && this.linkMarket.asin === asin ? this.linkMarket.key : null;
+            const tries = this.fallbackOrder(from, hint);
             Utils.log(`[CENA] ${asin}: na ${from} ceny nie ma, próbuję ${tries.join(', ')}`);
 
             for (const key of tries) {
-                // 9.2.0: moduł mógł zostać wyłączony w trakcie przeglądu —
-                // przerywamy natychmiast, zamiast dosyłać resztę zapytań.
+                // Moduł mógł zostać wyłączony w trakcie przeglądu — przerywamy
+                // natychmiast, zamiast dosyłać resztę zapytań.
                 if (!priceModuleOn()) break;
-                if (this.csp.img) break;
-                if (this.imageCount >= CONFIG.PRICE_MAX_IMAGE_REQUESTS) {
-                    Utils.log('[CENA] przegląd zatrzymany: limit obrazków');
+                // Blokada CSP mogła przyjść w trakcie przeglądu.
+                if (!this.usable(src)) break;
+                if (this.used(src.kind) >= this.cap(src.kind)) {
+                    Utils.log('[CENA] przegląd zatrzymany: limit zapytań');
                     break;
                 }
                 await new Promise(r => setTimeout(r, CONFIG.PRICE_FALLBACK_DELAY_MS));
@@ -5254,15 +5221,14 @@ const SCRIPT_LOGS_ENABLED = false;
                     Utils.log(`[CENA] ${asin}: przegląd przerwany, na ekranie jest już inny przedmiot`);
                     return null;
                 }
-                this.imageCount++;
+                this.count(src.kind);
                 const t0 = Date.now();
                 try {
-                    const d = await this.withTimeout(
-                        () => KeepaOCR.read(asin, key), CONFIG.PRICE_REQUEST_TIMEOUT_MS);
-                    if (d) {
-                        const out = this.buildOcrResult(d, key);
-                        Utils.log(`[CENA] ${asin}: znalezione na ${marketplace(key).host} — ${out.current.text}`);
-                        return { status: 'ok', ...out, source: 'keepa-ocr', fallback: true, ms: Date.now() - t0 };
+                    const out = await this.withTimeout(
+                        (signal) => src.run(asin, signal, key), CONFIG.PRICE_REQUEST_TIMEOUT_MS);
+                    if (out && (out.current || out.rrp)) {
+                        Utils.log(`[CENA] ${asin}: znalezione na ${marketplace(key).host} — ${(out.current || out.rrp).text}`);
+                        return { status: 'ok', ...out, market: key, source: src.name, fallback: true, ms: Date.now() - t0 };
                     }
                     Utils.log(`[CENA] ${asin}: na ${key} ceny też nie ma`);
                 } catch (e) {
@@ -5273,14 +5239,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Zapytać ponownie o cenę produktu, który jest teraz na ekranie
-         * (po zmianie ustawień).
-         *
-         * Jeśli po tym ASIN już leci zapytanie, `inFlight` nowego nie przepuści
-         * — i bez notatki o zamiarze odświeżenie PRZEPADŁOBY PO CICHU. Łapie się
-         * to tak: przełączono sklep w trakcie zapytania i na ekranie zostałaby
-         * cena poprzedniego rynku. Dlatego stawiamy flagę, a resolve() po
-         * zakończeniu sam ponawia odświeżenie.
+         * Zapytać ponownie o cenę produktu na ekranie (po zmianie ustawień).
+         * Gdy po tym ASIN już leci zapytanie, `inFlight` nowego nie przepuści
+         * — wtedy zostaje flaga, a resolve() po zakończeniu sam ponawia
+         * odświeżenie (inaczej po zmianie sklepu została cena starego rynku).
          */
         _refreshPending: null,
         refresh() {
@@ -5288,33 +5250,21 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!asin) { this.render(); return; }
             if (this.inFlight.has(asin)) { this._refreshPending = asin; return; }
             this._refreshPending = null;
-            this.resolve(asin, { manual: true });
+            this.resolve(asin);
         },
 
         /**
-         * CENA PYTANA JEST NA NOWO PRZY KAŻDYM PRZEDMIOCIE (8.5.0).
+         * Pyta o cenę — na nowo przy każdym przedmiocie. Cena na Amazonie
+         * zmienia się w ciągu dnia, więc trwałej pamięci cen nie ma; `cache`
+         * to tylko ostatni wynik do rysowania.
          *
-         * W 8.4.0 stała tu pamięć na pięć dób i powtórne spotkanie ASIN brało
-         * cenę z magazynu. Okazało się to błędem: cena na Amazonie zmienia się
-         * w ciągu dnia — przy weryfikacji wzorca produkt podrożał z 9,20 do 9,22
-         * w kilka godzin — a więc i w obrębie jednej zmiany ten sam produkt może
-         * kosztować różnie. Dziennik nabity wczorajszymi cenami daje błędną sumę,
-         * a poznać tego po samej sumie nie sposób.
-         *
-         * Dlatego trwałej pamięci cen nie ma wcale. Mapa `cache` została, ale
-         * jest teraz po prostu OSTATNIM WYNIKIEM do rysowania, a nie powodem,
-         * żeby pominąć zapytanie: każdy nowy przedmiot idzie do sieci.
-         *
-         * Ochroną przed lawiną jest `inFlight`: póki zapytanie po tym ASIN leci,
-         * drugie nie wychodzi. Częstotliwość ogranicza sam cykl obsługi: check()
-         * rusza resolve() przy zmianie ASIN albo na początku nowego przedmiotu,
-         * a nie przy każdej mutacji DOM.
-         *
-         * 9.2.0: pierwszym warunkiem jest moduł cen. To jest ta sama bariera, co
-         * w KeepaOCR.loadImage(), postawiona świadomie dwa razy — na wejściu
-         * i na wyjściu.
+         * Przed lawiną chroni `inFlight` (drugie zapytanie po tym samym ASIN nie
+         * wychodzi), a częstotliwość ogranicza cykl obsługi: check() woła
+         * resolve() przy zmianie ASIN albo na początku przedmiotu, nie przy
+         * każdej mutacji DOM. Pierwszy warunek to moduł cen — ta sama bariera
+         * co w PriceNet, celowo na wejściu i na wyjściu.
          */
-        async resolve(asin, { manual = false } = {}) {
+        async resolve(asin) {
             if (!asin) return null;
             if (!priceModuleOn()) return null;
             if (this.inFlight.has(asin)) return null;
@@ -5322,7 +5272,7 @@ const SCRIPT_LOGS_ENABLED = false;
 
             // Ani jednego włączonego źródła — do sieci nie idziemy wcale.
             // To normalny stan w trybie 'legend': cenę widać na obrazku.
-            if (!this.providers().some(p => p.available !== false)) {
+            if (!PriceSources.list().some(p => this.usable(p))) {
                 this._remember(asin, { status: 'off' });
                 this.render();
                 return null;
@@ -5334,26 +5284,16 @@ const SCRIPT_LOGS_ENABLED = false;
             let result = { status: 'fail', reason: I18n.get('priceCard_noPrice') };
             try {
                 let limitHit = false;
-                for (const p of this.providers()) {
-                    if (p.available === false) continue;
-                    // Zdarzenie securitypolicyviolation przylatuje asynchronicznie,
-                    // już po odmowie fetch, dlatego flagę sprawdzamy w każdym
-                    // obiegu: inaczej następny dostawca zdążyłby wejść w zawczasu
-                    // zablokowaną sieć.
+                for (const p of PriceSources.list()) {
+                    if (!this.usable(p)) continue;
+                    // securitypolicyviolation przychodzi asynchronicznie, po
+                    // odmowie fetch — flagę sprawdzamy w każdym obiegu, żeby
+                    // następny dostawca nie wchodził w zablokowaną sieć.
                     if (this.csp.net) break;
 
-                    /**
-                     * LIMIT SPRAWDZA SIĘ PO TYPIE DOSTAWCY (poprawka 8.6.0).
-                     *
-                     * Wcześniej wspólny licznik requestCount rósł u WSZYSTKICH
-                     * dostawców, łącznie z obrazkowym, a sprawdzenie stało JEDNO,
-                     * przed pętlą, przeciwko limitowi tekstowemu. Osobny licznik
-                     * obrazków, założony w 8.4.0, niczego przy tym nie rozstrzygał.
-                     */
-                    const isImg = !!p.isImage;
-                    const used = isImg ? this.imageCount : this.requestCount;
-                    const cap  = isImg ? CONFIG.PRICE_MAX_IMAGE_REQUESTS
-                                       : CONFIG.PRICE_MAX_REQUESTS_PER_SESSION;
+                    const isImg = p.kind === 'image';
+                    const used = this.used(p.kind);
+                    const cap = this.cap(p.kind);
                     if (used >= cap) {
                         limitHit = true;
                         Utils.error(`[CENA] osiągnięto limit ${isImg ? 'obrazków' : 'zapytań tekstowych'}: `
@@ -5365,7 +5305,7 @@ const SCRIPT_LOGS_ENABLED = false;
                         await this.respectRateLimit();
                         // Moduł mógł zostać wyłączony, póki czekaliśmy na slot.
                         if (!priceModuleOn()) break;
-                        if (isImg) this.imageCount++; else this.requestCount++;
+                        this.count(p.kind);
                         const t0 = Date.now();
                         const d = await this.withTimeout((signal) => p.run(asin, signal), CONFIG.PRICE_REQUEST_TIMEOUT_MS);
                         if (d && (d.current || d.rrp)) {
@@ -5384,16 +5324,14 @@ const SCRIPT_LOGS_ENABLED = false;
                     result = { status: 'fail', reason: I18n.get('priceCard_limit') };
                 }
 
-                // Ceny na wybranym rynku nie ma — próbujemy pozostałych.
-                // Tylko dla źródła obrazkowego: r.jina.ai rozbiera szablon
-                // konkretnej witryny i gonienie go po obcych rynkach nie ma sensu.
+                // Ceny na wybranym rynku nie ma — próbujemy pozostałych,
+                // o ile któreś źródło nadaje się do przeglądu (marketSearch).
                 const wantsFallback = CONFIG.PRICE_FALLBACK_ENABLED
                     && priceModuleOn()
                     && store.localTabConfig.priceCard.marketFallback !== false
                     && result.status !== 'ok'
                     && !limitHit
-                    && !this.csp.img
-                    && store.localTabConfig.priceCard.source !== 'jina';
+                    && !!this.marketSearcher();
                 if (wantsFallback) {
                     this.searchingOther = asin;
                     this.render();
@@ -5420,13 +5358,10 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * Zapamiętać wynik po ASIN, przycinając pamięć karty (9.1.0).
-         *
-         * Mapa trzyma kolejność wstawiania, więc „usuń i włóż od nowa” robi z niej
-         * LRU: najdawniej niespotykany ASIN ląduje pierwszym kluczem i wychodzi
-         * pierwszy. Do 9.1.0 Mapa rosła przez całą zmianę — przy tysiącu z górą
-         * przedmiotów to zbędne megabajty w pamięci karty, która i tak żyje
-         * dziesięć godzin bez przeładowania.
+         * Zapamiętać wynik po ASIN, przycinając pamięć karty do
+         * PRICE_CACHE_MAX_ENTRIES. Mapa trzyma kolejność wstawiania, więc
+         * „usuń i włóż od nowa” robi z niej LRU — bez przycinania rosłaby przez
+         * całą zmianę.
          */
         _remember(asin, result) {
             this.cache.delete(asin);
@@ -5440,30 +5375,52 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         // ---------------- szukanie ASIN ----------------
+        /**
+         * Rynek z linku do produktu: `https://www.amazon.it/dp/…` → 'it'.
+         *
+         * Tylko hosty z CONFIG.MARKETPLACES, porównane w całości — link
+         * względny, obcy host albo `amazon.it.evil.example` dają null. Wynik
+         * decyduje wyłącznie o kolejności przeglądu rynków; adres zapytania
+         * składa się z tablicy, a nie z tekstu strony.
+         */
+        marketFromHref(href) {
+            const m = /^(?:https?:)?\/\/([^/?#:]+)/i.exec(String(href || ''));
+            if (!m) return null;
+            const host = m[1].toLowerCase().replace(/^www\./, '');
+            return Object.keys(CONFIG.MARKETPLACES)
+                .find(k => CONFIG.MARKETPLACES[k].host.replace(/^www\./, '') === host) || null;
+        },
+
+        /**
+         * Rynek linku, z którego wzięto ostatni ASIN: { asin, key } albo null.
+         * ASIN z samego tekstu strony rynku nie ma — wtedy przegląd idzie
+         * zwykłą kolejnością.
+         */
+        linkMarket: null,
+
         detectAsin() {
             for (const a of document.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
                 if (a.closest('#' + CONFIG.SCRIPT_ID_PREFIX + 'priceCard')) continue;
-                const m = (a.getAttribute('href') || '').match(CONFIG.PRICE_ASIN_FROM_HREF);
-                if (m) return m[1];
+                const href = a.getAttribute('href') || '';
+                const m = href.match(CONFIG.PRICE_ASIN_FROM_HREF);
+                if (m) {
+                    const key = this.marketFromHref(href);
+                    this.linkMarket = key ? { asin: m[1], key } : null;
+                    return m[1];
+                }
             }
-            // Rezerwa po tekście — gdy linku na stronie nie ma wcale.
+            this.linkMarket = null;
+            // Rezerwa po tekście, gdy linku do produktu nie ma.
             //
-            // Przyjmujemy ASIN TYLKO WTEDY, gdy jest na stronie jeden. Jeśli jest
-            // ich kilka, ustalić bieżącego po tekście się nie da: kolejność
-            // w dokumencie nic nie mówi o świeżości. Sprawdzone na stanowisku —
-            // najpierw brało się pierwsze trafienie i karta cofała się do
-            // najstarszego ASIN z dziennika, potem ostatnie — i czepiała się ASIN
-            // z cudzego panelu stanu. Oba warianty kłamały, więc przy
-            // niejednoznaczności uczciwiej nie zgadywać, tylko zostawić na karcie
-            // ostatnie, co było wiadome na pewno.
-            // Karta znika na czas odczytu, żeby nie podać nam WŁASNEGO ASIN —
-            // pokazuje przecież poprzedni przedmiot. Przywrócenie idzie przez
-            // `finally`: gdyby odczyt innerText rzucił (a robi to przy
-            // rozbieranym drzewie), karta zostałaby schowana na zawsze i wyglądało
-            // by to jak zepsuty skrypt, choć powodem byłby jeden wyjątek.
-            // Bez wartości początkowej: przypisanie w `try` jest jedyną drogą
-            // do użycia `text` niżej, więc `= ''` byłoby wartością, której nikt
-            // nigdy nie przeczyta (ESLint, no-useless-assignment).
+            // ASIN tylko wtedy, gdy na stronie jest jeden: przy kilku kolejność
+            // w dokumencie nie mówi, który jest bieżący (pierwszy to bywa stary
+            // wpis dziennika, ostatni — cudzy panel stanu). Przy
+            // niejednoznaczności karta zostaje przy ostatnim pewnym ASIN.
+            //
+            // Karta znika na czas odczytu, żeby nie podać własnego ASIN
+            // (pokazuje poprzedni przedmiot). Przywrócenie w `finally` —
+            // innerText rzuca przy rozbieranym drzewie, a karta nie może
+            // zostać schowana na zawsze.
             const prev = this.el && this.el.style.display;
             let text;
             try {
@@ -5489,22 +5446,19 @@ const SCRIPT_LOGS_ENABLED = false;
         /**
          * Czyta i rozbiera Content-Security-Policy strony.
          *
-         * CSP to IMIENNA LISTA HOSTÓW, a nie wyłącznik. Częsty błąd: „mój skrypt
-         * z githuba się załadował, czyli polityka jest miękka”. Nie — znaczy to
-         * tylko tyle, że dozwolony jest właśnie tamten host. U Wikipedii na
-         * przykład raw.githubusercontent.com na liście jest (potrzebny do
-         * gadżetów), a graph.keepa.com i r.jina.ai nie.
+         * CSP to imienna lista hostów, a nie wyłącznik: to, że skrypt się
+         * załadował, znaczy tylko, że dozwolony jest host, z którego go
+         * pobrano, a nie hosty źródeł ceny (PriceSources.cspHosts).
          *
-         * Polityka częściej przychodzi nagłówkiem HTTP niż meta-tagiem, dlatego
-         * nagłówek doczytuje się zapytaniem o własną stronę: idzie ono na własny
-         * origin i przechodzi nawet przy `connect-src 'self'`.
-         *
-         * 9.2.0: to jedyne zapytanie w pliku, które nie zależy od modułu cen —
-         * bo nie wychodzi poza własną domenę i leci wyłącznie wtedy, gdy człowiek
-         * sam wywoła SH.cspReport() z konsoli.
+         * Polityka częściej przychodzi nagłówkiem HTTP niż meta-tagiem, więc
+         * nagłówek doczytuje się zapytaniem o własną stronę (własny origin,
+         * przechodzi nawet przy `connect-src 'self'`). To jedyne zapytanie
+         * niezależne od modułu cen: nie wychodzi poza własną domenę i leci tylko
+         * po ręcznym SH.cspReport().
          */
         async readCsp() {
-            const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+            const meta = /** @type {HTMLMetaElement|null} */ (
+                document.querySelector('meta[http-equiv="Content-Security-Policy"]'));
             let header = null, headerError = null;
             try {
                 const r = await fetch(location.href, { method: 'GET', cache: 'no-store' });
@@ -5535,11 +5489,8 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!list) return 'dyrektywa nie ustawiona i default-src też — dozwolone';
             const used = parsed.directives[directive] ? directive : 'default-src (fallback)';
 
-            // 8.3.0: rozbiór źródeł według gramatyki CSP. Poprzednia wersja umiała
-            // tylko gołą nazwę hosta i kłamała na wszystkim innym: politykę typu
-            // `img-src https:` (dopuszcza dowolne źródło https) ogłaszała
-            // zakazującą, a `'none'` i `'self'` nie rozumiała w ogóle.
-            // Diagnostyka, której nie można wierzyć, jest gorsza niż jej brak.
+            // Rozbiór źródeł według gramatyki CSP: host (z maską *.),
+            // sam schemat (`https:`), 'none' i 'self'.
             if (list.some(s => s.toLowerCase() === "'none'")) {
                 return `ZABRONIONE (wg ${used}: 'none')`;
             }
@@ -5566,32 +5517,21 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Zmiana ASIN jest samodzielnym wyzwalaczem, niezależnym od cyklu
-         * przedmiotu.
+         * przedmiotu: przy porzuconym przedmiocie flaga itemInProgress zostaje
+         * podniesiona, armNewItem() nie zadziała, a karta i tak musi pokazać
+         * nowy produkt.
          *
-         * To ważne przy przerwanej obsłudze. Jeśli przedmiot porzucono, nie
-         * dochodząc do `Przypisz nowy`, flaga itemInProgress zostaje wzniesiona
-         * i następne `poniżej` NIE daje już przejścia false->true, czyli
-         * armNewItem() nie zadziała. Karta i tak musi pokazać nowy produkt,
-         * dlatego decyzja zapada po samym ASIN, a nie po stanie cyklu.
-         *
-         * awaiting potrzebny jest tylko do przypadku odwrotnego: ten sam ASIN
-         * pod rząd (klient zwrócił pięć jednakowych rzeczy) — tam ASIN się nie
-         * zmienia i przerysowanie wznosi właśnie początek nowego przedmiotu.
+         * `awaiting` obsługuje przypadek odwrotny: ten sam ASIN pod rząd (pięć
+         * jednakowych zwrotów) — ASIN się nie zmienia, więc o nowym zapytaniu
+         * decyduje początek nowego przedmiotu.
          */
         check() {
-            // 9.2.0: przy wyłączonym module nie ma nawet po co szukać ASIN —
-            // wynik i tak byłby użyty wyłącznie do zapytania sieciowego.
+            // Bez modułu cen ASIN nie jest potrzebny — służy tylko zapytaniu.
             if (!priceModuleOn()) return;
             const pc = store.localTabConfig.priceCard;
-            /**
-             * 8.5.0: kartę można SCHOWAĆ, nie wyłączając silnika.
-             *
-             * Potrzebne na zmiany, gdzie patrzeć na cenę nie ma po co, a znać
-             * sumę pod koniec zmiany warto: obrazek się ładuje, cena jest
-             * rozpoznawana, dziennik się napełnia, a na ekranie zostaje tylko
-             * linia sumy w oknie statystyk. Dlatego warunkiem wyjścia nie jest
-             * „karta niewidoczna”, tylko „i niewidoczna, i dziennik nieprowadzony”.
-             */
+            // Karta może być schowana przy prowadzonym dzienniku (widać tylko
+            // sumę w linii 6) — wychodzimy dopiero, gdy nie ma ani karty,
+            // ani dziennika.
             if (!pc.visible && !pc.logValues) return;
             const asin = this.detectAsin();
             if (!asin) return;
@@ -5626,19 +5566,11 @@ const SCRIPT_LOGS_ENABLED = false;
             });
 
             /**
-             * ASIN — JEDYNY KLIKALNY ELEMENT KARTY (8.5.0).
-             *
-             * Karta jest przezroczysta dla myszy: `pointer-events:none` na niej
-             * i na wszystkich dzieciach, żeby kliknięcia dochodziły do interfejsu
-             * T-REX. Dla linku robi się dokładnie jeden wyjątek —
-             * `pointer-events:auto` na samym elemencie. CSS na to pozwala:
-             * potomek może odzyskać zdarzenia, nawet jeśli przodek ich nie
-             * przyjmuje. Wszystko inne — cena, RRP, źródło, ramka wykresu —
-             * zostaje przezroczyste dla kliknięć.
-             *
-             * Link prowadzi do /dp/<ASIN> w TYM SAMYM sklepie, z którego wykresu
-             * wzięto cenę (patrz CONFIG.MARKETPLACES), inaczej sprawdzenie ceny
-             * oczami traci sens: otworzyłaby się witryna innego kraju.
+             * Kod produktu — jedyny element karty, który może łapać mysz.
+             * Karta i jej dzieci mają `pointer-events:none`; link odzyskuje
+             * zdarzenia własnym `pointer-events:auto`, gdy klikalność jest
+             * włączona (applyStyle). Prowadzi do /dp/<ASIN> w sklepie, z którego
+             * wzięto cenę.
              */
             this.asinEl = h('a', {
                 target: '_blank',
@@ -5649,9 +5581,8 @@ const SCRIPT_LOGS_ENABLED = false;
             this.rrpEl = h('div');
             this.srcEl = h('div');
             this.graphWrap = h('div');
-            // no-referrer jest obowiązkowy. Keepa oddaje obrazek tylko wtedy, gdy
-            // nagłówka Referer nie ma: z localhost i z każdą inną polityką
-            // przychodzi błąd, bez referera — 500x200 w 79 ms.
+            // Obrazek wykresu idzie bez nagłówka Referer — adres strony T-REX
+            // nie wychodzi do serwisu wykresu (a Keepa bez tego obrazka nie oddaje).
             this.graphImg = h('img', { referrerPolicy: 'no-referrer' });
             this.graphWrap.appendChild(this.graphImg);
             this.el.append(this.asinEl, this.priceEl, this.rrpEl, this.srcEl, this.graphWrap);
@@ -5675,12 +5606,11 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.applyStyle();   // link włącza się i wyłącza razem z trybem
             });
 
-            // Łapiemy blokady CSP po naszych własnych hostach.
-            // 8.3.0: referencja do obsługi jest zapamiętana — potrzebna
-            // w Main.teardown().
+            // Blokady CSP po hostach źródeł ceny. Referencja do obsługi jest
+            // zapamiętana dla Main.teardown().
             this.onCspViolation = (e) => {
                 const uri = String(e.blockedURI || '');
-                if (!/graph\.keepa\.com|r\.jina\.ai|api\.keepa\.com/.test(uri)) return;
+                if (!Object.keys(PriceSources.cspHosts).some(host => uri.includes(host))) return;
 
                 const dir = e.effectiveDirective || e.violatedDirective || '';
                 if (dir.startsWith('img')) this.csp.img = true;
@@ -5697,8 +5627,7 @@ const SCRIPT_LOGS_ENABLED = false;
             };
             document.addEventListener('securitypolicyviolation', this.onCspViolation);
 
-            // 8.3.0: włączono/wyłączono źródło tekstowe — wpisy 'off' w pamięci
-            // przestały być prawdziwe.
+            // Zmieniło się źródło ceny — wpisy 'off' w pamięci przestały być prawdziwe.
             bus.on('store:changed:localTabConfig.priceCard.source', () => this.refresh());
             bus.on('store:changed:localTabConfig.priceCard.logValues', () => this.refresh());
             // Zmiana sklepu zmienia i wykres, i walutę — pytamy ponownie.
@@ -5708,19 +5637,16 @@ const SCRIPT_LOGS_ENABLED = false;
             bus.on('store:changed:uiFlags.itemInProgress', (d) => { if (d.value === true) this.armNewItem(); });
             // Stronę skanuje AutoTrigger, osobnego obserwatora nie zakładamy.
             bus.on('page:scanned', () => this.check());
-            // 8.3.0: karta zależy tylko od własnych ustawień i języka.
+            // Karta zależy tylko od własnych ustawień i języka.
             onStorePaths(['localTabConfig.priceCard', 'userConfig.language'], () => this.applyStyle());
 
             this.check();
         },
 
         /**
-         * Kolor WSZYSTKICH tekstów karty — jedna wartość na całą kartę, dokładnie
-         * jak przy liniach okna statystyk.
-         *
-         * Liczony przy każdym applyStyle(), a nie zapamiętywany: applyStyle
-         * wywołuje się po zmianie ustawień karty, więc nowy kolor ma być widoczny
-         * od razu, a nie po przeładowaniu strony.
+         * Kolor wszystkich tekstów karty — jedna wartość na kartę, jak w liniach
+         * okna. Liczony przy każdym applyStyle(), więc zmiana w panelu działa
+         * od razu.
          */
         textColor() {
             const pc = store.localTabConfig.priceCard;
@@ -5732,23 +5658,17 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!this.el) return;
             const pc = store.localTabConfig.priceCard;
 
-            // 9.2.0: przy wyłączonym module karty nie ma na ekranie w ogóle —
-            // pokazywałaby wyłącznie „—”, sugerując, że coś się liczy w tle.
+            // Bez modułu cen karty nie ma na ekranie — sama „—” sugerowałaby,
+            // że coś liczy się w tle.
             this.el.style.display = (pc.visible && priceModuleOn()) ? 'block' : 'none';
             this.el.style.width = `${Utils.clampNum(pc.width, 120, 1600, 280)}px`;
             this.el.style.left = pc.position.left || '14px';
             if (pc.position.top) { this.el.style.top = pc.position.top; this.el.style.bottom = 'auto'; }
             else { this.el.style.top = 'auto'; this.el.style.bottom = '14px'; }
 
-            /**
-             * TŁO, RAMKA I CIEŃ IDĄ RAZEM (1.0.0).
-             *
-             * Przy przezroczystym tle — a takie jest teraz domyślne — ramka
-             * i cień zostawiłyby na ekranie pustą obwódkę wiszącą nad stroną:
-             * najgorsze z obu światów. Dlatego wszystkie trzy zależą od jednej
-             * wartości: jest tło, jest oprawa; nie ma tła, zostaje sam tekst,
-             * dokładnie jak w liniach okna statystyk.
-             */
+            // Tło, ramka i cień idą razem: przy przezroczystym tle ramka i cień
+            // zostawiłyby pustą obwódkę nad stroną. Nie ma tła — zostaje sam
+            // tekst, jak w liniach okna.
             const bgAlpha = Utils.clampNum(pc.bgAlpha, 0, 100, 0);
             const rgb = Utils.hexToRgb(pc.bgColorHex);
             this.el.style.background = bgAlpha > 0 ? `rgba(${rgb}, ${bgAlpha / 100})` : 'transparent';
@@ -5760,19 +5680,13 @@ const SCRIPT_LOGS_ENABLED = false;
             this.el.style.fontFamily =
                 CONFIG.FONT_FAMILY_OPTIONS[pc.fontFamily] || CONFIG.FONT_FAMILY_OPTIONS.default;
 
-            // WAŻNE: skrót `font:` wymaga podania rodziny, a `inherit` jest w nim
-            // niedopuszczalny — przeglądarka po cichu wyrzuca CAŁĄ regułę.
-            // Złapane na stanowisku: cena rysowała się 14px/400 zamiast 30px/800.
-            // Dlatego właściwości ustawia się osobno.
+            // Właściwości osobno, nie skrótem `font:` — skrót wymaga rodziny,
+            // nie przyjmuje `inherit` i przeglądarka po cichu wyrzuca całą regułę.
             const fs = Utils.clampNum(pc.fontSize, 10, 96, 16);
             const px = (k) => Math.max(9, Math.round(fs * k)) + 'px';
 
-            /**
-             * Cień tekstu jest tu obowiązkowy właśnie DLATEGO, że tło bywa
-             * przezroczyste: jasny tekst na jasnym fragmencie cudzej strony
-             * przestaje być czytelny. Jest słaby — ma odciąć literę od tła,
-             * a nie rysować się sam.
-             */
+            // Słaby cień tekstu, bo tło bywa przezroczyste: jasny tekst na
+            // jasnym fragmencie strony przestałby być czytelny.
             const SHADOW = 'text-shadow:0 1px 3px rgba(0,0,0,.6)';
             const COLOR = 'color:' + this.textColor();
 
@@ -5780,18 +5694,9 @@ const SCRIPT_LOGS_ENABLED = false;
             // Przy włączonym przeciąganiu jest zdejmowany: wtedy ciągnie się całą
             // kartę, a kliknięcie w link wyprowadziłoby ze strony w środku gestu.
             const dragging = store.uiFlags.isPriceCardDragging;
-            /**
-             * KLIKALNOŚĆ KODU PRODUKTU (1.0.0: domyślnie WYŁĄCZONA).
-             *
-             * `pointer-events:auto` na linku było jedynym wyjątkiem od
-             * przezroczystej karty, czyli jedynym miejscem, w którym karta mogła
-             * przykryć przycisk T-REX. Skoro jej zadaniem jest nie przeszkadzać,
-             * wyjątek włącza się ręcznie.
-             *
-             * Przy przeciąganiu link jest zdejmowany niezależnie od ustawienia:
-             * wtedy ciągnie się całą kartę, a kliknięcie wyprowadziłoby ze strony
-             * w środku gestu.
-             */
+            // Klikalność kodu produktu (domyślnie wyłączona — to jedyne miejsce,
+            // w którym karta mogłaby przykryć przycisk T-REX). Przy przeciąganiu
+            // link jest zdejmowany niezależnie od ustawienia.
             const linkOn = pc.asinClickable === true && !dragging;
             this.asinEl.style.cssText = [
                 'font-weight:400', 'font-size:' + px(0.8), 'line-height:1.3',
@@ -5804,8 +5709,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 SHADOW,
             ].join(';');
 
-            // Cena: ta sama grubość, co w liniach okna statystyk. Tłuste 800
-            // przy przezroczystym tle wyglądało jak baner, a nie jak podpowiedź.
+            // Cena tą samą grubością co linie okna — to podpowiedź, nie baner.
             this.priceEl.style.cssText = [
                 'font-weight:400', 'font-size:' + px(1), 'line-height:1.25',
                 'margin:' + (bgAlpha > 0 ? '4px 0 2px' : '1px 0 0'),
@@ -5823,29 +5727,23 @@ const SCRIPT_LOGS_ENABLED = false;
                 SHADOW,
             ].join(';');
 
-            // Dwa różne tryby wyświetlania wykresu.
-            //
-            // PRZYCIĘCIE (domyślnie): obrazek NIE jest skalowany — wychodzi
-            // w natywnych 500x200 i przesuwa się w lewo o brakującą szerokość.
-            // Czyli zwężenie karty odcina wykres z lewej, a nie ściska go.
-            // Wysokość zostaje stała, a tekst legendy piksel w piksel — właśnie
-            // tak cena czyta się najlepiej. Legenda Keepa jest narysowana
-            // w prawym górnym rogu, więc widać ją nawet wtedy, gdy z wykresu
-            // zostaje jedna trzecia szerokości.
-            //
-            // BEZ PRZYCIĘCIA: wykres wpisuje się w szerokość karty w całości,
-            // proporcjonalnie się zmniejszając.
+            // Tryby wykresu. Przycięcie: obrazek w natywnych 500x200 przesuwa
+            // się w lewo, więc zwężenie karty odcina wykres z lewej, a legenda
+            // (prawy górny róg) zostaje piksel w piksel. Bez przycięcia: cały
+            // wykres wpisany w szerokość karty.
             const inner = Utils.clampNum(pc.width, 120, 1600, 280) - 28;
-            const W = CONFIG.PRICE_KEEPA_PNG_W, H = CONFIG.PRICE_KEEPA_PNG_H;
+            const chart = PriceSources.chart;
+            const W = chart ? chart.width : 0, H = chart ? chart.height : 0;
             const frame = (w, h) => `overflow:hidden;width:${w}px;height:${h}px;margin-top:8px;`
                 + 'border-radius:5px;border:1px solid rgba(255,255,255,.18);background:#fff';
 
-            if (pc.graphMode === 'legend') {
+            if (!chart) {
+                // Źródła bez wykresu — ramki nie ma czym wypełnić.
+            } else if (pc.graphMode === 'legend') {
                 // TYLKO BLOK Z CENAMI. Obrazek wychodzi w całości, ale okienko
                 // pokazuje wyłącznie ramkę legendy, a ujemne marginesy podsuwają
                 // potrzebny fragment pod to okienko.
-                const LX = CONFIG.PRICE_KEEPA_LEGEND_X, LY = CONFIG.PRICE_KEEPA_LEGEND_Y;
-                const LW = CONFIG.PRICE_KEEPA_LEGEND_W, LH = CONFIG.PRICE_KEEPA_LEGEND_H;
+                const { x: LX, y: LY, w: LW, h: LH } = chart.legend;
                 const k = inner / LW;
                 this.graphWrap.style.cssText = frame(inner, Math.round(LH * k));
                 this.graphImg.style.cssText = [
@@ -5867,38 +5765,35 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.graphImg.style.cssText =
                     `width:${inner}px;height:auto;margin-left:0;margin-top:0;display:block;max-width:none`;
             }
-            // 8.4.0: ramka wykresu widoczna TYLKO w trybie 'graph'.
-            // W trybie 'ocr' obrazek i tak się ładuje — czyta się z niego cenę —
-            // ale żyje poza dokumentem, w offscreen-canvas, i na ekran nie trafia.
-            // Obrazek tnie CSP — pustej ramki nie pokazujemy wcale.
+            // Ramka wykresu tylko w trybie, który go pokazuje (showsChart). Przy
+            // odczycie ceny z obrazka ten żyje poza dokumentem (canvas) i na
+            // ekran nie trafia. Przy blokadzie CSP pustej ramki nie pokazujemy.
             this.graphWrap.style.display =
-                (pc.source === 'graph' && pc.showGraph && !this.csp.img && priceModuleOn()) ? 'block' : 'none';
+                (PriceSources.showsChart(pc.source) && pc.showGraph && !this.csp.img && priceModuleOn()) ? 'block' : 'none';
 
             this.render();
         },
 
         /**
-         * DWIE ROLE DRUGIEGO I TRZECIEGO WIERSZA — i zasada, która je rozdziela.
+         * Tekst ceny na karcie: w walucie wyświetlania, jeśli ją wybrano,
+         * inaczej tak, jak przyszła ze sklepu. Obiekt ceny się nie zmienia —
+         * do dziennika idzie kwota i waluta sklepu, do sumy euro.
+         */
+        priceText(p) {
+            return FxRates.display(p.value, p.currency) || p.text;
+        },
+
+        /**
+         * Wpisuje tekst w wiersz karty; pusty tekst chowa wiersz, żeby nie
+         * zostawała pusta linijka.
          *
-         * Wiersz RRP i wiersz źródła noszą raz informację dodatkową (cena
-         * katalogowa, nazwa dostawcy, czas), a raz POWÓD, DLA KTÓREGO CENY NIE MA
-         * (blokada CSP, wyczerpany limit, źródła odpracowały bez wyniku).
-         *
-         * Wyłączniki `showRrp` i `showSource` dotyczą WYŁĄCZNIE pierwszej roli.
-         * Komunikat o awarii pokazuje się zawsze: karta, która przy zablokowanym
-         * CSP pokazuje samą kreskę bez słowa wyjaśnienia, jest nie do odróżnienia
-         * od zepsutego skryptu — a to dokładnie ten rodzaj cichej awarii, którego
-         * ten projekt nie toleruje nigdzie indziej.
-         *
-         * Stany PRZEJŚCIOWE (trwa zapytanie, trwa przegląd sklepów) idą pod
-         * wyłącznikami, bo awarią nie są, a przy karcie jednolinijkowej migałyby
-         * drugim wierszem przy każdym przedmiocie.
-         *
-         * Pomocnik poniżej NIE zna wyłączników i to jest celowe: decyzję
-         * podejmuje wywołujący, bo tylko on wie, czy wpisuje informację, czy
-         * powód awarii. Tutaj zostaje jedna reguła — pusty tekst znaczy „schowaj
-         * wiersz”, żeby po wyłączeniu nie zostawała pusta linijka odsuwająca
-         * resztę karty.
+         * Wiersz RRP i wiersz źródła niosą raz informację dodatkową (cena
+         * katalogowa, dostawca, czas), a raz powód braku ceny (CSP, limit,
+         * brak wyniku). Wyłączniki `showRrp` i `showSource` dotyczą tylko
+         * pierwszej roli — powód awarii pokazuje się zawsze, bo karta z samą
+         * kreską wygląda jak zepsuty skrypt. Stany przejściowe (zapytanie,
+         * przegląd sklepów) idą pod wyłącznikami, żeby nie migać drugim
+         * wierszem przy każdym przedmiocie. O roli decyduje wywołujący.
          *
          * @param {HTMLElement} el   wiersz do zapisania
          * @param {string} text      treść; pusta chowa wiersz
@@ -5924,41 +5819,36 @@ const SCRIPT_LOGS_ENABLED = false;
             }
 
             this.asinEl.textContent = `${asin}`;
-            // Link prowadzi na TEN rynek, z którego zdjęto cenę. Jeśli znaleziono
-            // ją przeglądem sklepów, to nie jest wybrany sklep i prowadzić do
-            // wybranego nie wolno: człowiek otworzyłby amazon.de i nie zobaczył
-            // tam pokazanej ceny.
+            // Link prowadzi na rynek, z którego zdjęto cenę — po przeglądzie
+            // sklepów to nie wybrany sklep.
             const found = this.cache.get(asin);
             if (pc.asinClickable === true) {
                 const url = productUrl(asin, found && found.market);
                 this.asinEl.setAttribute('href', url);
                 this.asinEl.title = url;
             } else {
-                // Przy wyłączonej klikalności kod produktu jest ZWYKŁYM TEKSTEM.
-                // Samo `pointer-events:none` by nie wystarczyło: element z href
-                // zostaje w kolejności tabulacji i otwiera się środkowym
-                // przyciskiem myszy. Bez href nie ma czego otworzyć.
+                // Bez klikalności kod jest zwykłym tekstem, bez href: element
+                // z href zostaje w kolejności tabulacji i otwiera się środkowym
+                // przyciskiem, nawet przy `pointer-events:none`.
                 this.asinEl.removeAttribute('href');
                 this.asinEl.title = '';
             }
-            // !csp.img jest obowiązkowy także tutaj: applyStyle() ramkę chowa,
-            // a render() wywołuje się później i bez tego sprawdzenia przywracałby ją.
-            if (pc.source === 'graph' && pc.showGraph && !this.csp.img && priceModuleOn()) {
+            // !csp.img także tutaj — applyStyle() chowa ramkę, a render()
+            // idzie później i przywróciłby ją.
+            if (PriceSources.showsChart(pc.source) && pc.showGraph && !this.csp.img && priceModuleOn()) {
                 this.graphWrap.style.display = 'block';
-                const want = this.keepaUrl(asin, found && found.market);
+                const want = PriceSources.chart.url(asin, found && found.market);
                 if (this.graphImg.getAttribute('src') !== want) this.graphImg.setAttribute('src', want);
             }
 
             if (this.inFlight.has(asin)) {
-                // 8.5.0: cena pytana jest na nowo przy każdym przedmiocie, więc
-                // „…” zamiast liczby migałoby bez przerwy. Jeśli poprzedni wynik
-                // po tym samym ASIN jest — pokazujemy go przygaszony, a w linii
-                // źródła piszemy, że trwa odświeżanie.
+                // Póki trwa zapytanie, zostaje poprzedni wynik po tym ASIN —
+                // „…” migałoby przy każdym przedmiocie.
                 const prev = this.cache.get(asin);
                 this.priceEl.style.display = 'block';
                 this.priceEl.textContent =
                     (prev && prev.status === 'ok' && prev.current && pc.showPrice)
-                        ? prev.current.text : '…';
+                        ? this.priceText(prev.current) : '…';
                 this.rrpEl.style.textDecoration = 'none';
                 // Stan przejściowy, nie awaria — idzie pod wyłącznikami.
                 const hunting = this.searchingOther === asin;
@@ -5971,31 +5861,21 @@ const SCRIPT_LOGS_ENABLED = false;
 
             const r = this.cache.get(asin);
 
-            // KOLEJNOŚĆ GAŁĘZI JEST WAŻNA (8.3.0).
-            //
-            // W 8.2.0 sprawdzenie CSP stało WYŻEJ niż rozbiór statusu i było
-            // zapisane jako `r.status === 'csp' || this.csp.img || this.csp.net`.
-            // Przez to wystarczyła blokada OBRAZKA (img-src), żeby otrzymana już
-            // cena była wyrzucana, a zamiast niej pokazywało się „—” z komunikatem
-            // o zablokowanym wykresie. Kombinacja całkiem realna: CSP to imienna
-            // lista hostów i connect-src spokojnie przepuszcza r.jina.ai, podczas
-            // gdy img-src tnie graph.keepa.com.
-            //
-            // Teraz najpierw patrzymy, czy cena jest, a dopiero potem tłumaczymy,
-            // czemu jej nie ma.
+            // Kolejność gałęzi jest ważna: najpierw „czy cena jest”, dopiero
+            // potem „dlaczego jej nie ma”. Blokada samego obrazka (img-src) nie
+            // może wyrzucić ceny otrzymanej zapytaniem tekstowym (connect-src).
 
             // 1. Cena jest — pokazujemy, cokolwiek blokowałaby polityka.
             if (r && r.status === 'ok') {
                 const price = r.current || r.rrp;
-                this.priceEl.textContent = pc.showPrice && price ? price.text : '';
+                this.priceEl.textContent = pc.showPrice && price ? this.priceText(price) : '';
                 this.priceEl.style.display = pc.showPrice ? 'block' : 'none';
 
-                // Druga linia: albo prawdziwa RRP (daje ją tylko jina/keepa-api),
-                // albo druga seria wykresu („Neu 11.49”). Przekreślenie stawia się
-                // TYLKO przy RRP: przekreślona cena znaczy „stara”, a wieszanie
-                // tego na żywej ofercie byłoby wprost dezinformacją.
+                // Druga linia: RRP (ze źródeł tekstowych) albo druga seria
+                // wykresu („Neu 11.49”). Przekreślenie tylko przy RRP —
+                // przekreślona cena znaczy „stara”, nie żywa oferta.
                 if (pc.showRrp && r.rrp) {
-                    this.rrpEl.textContent = `${I18n.get('priceCard_rrp')} ${r.rrp.text}`;
+                    this.rrpEl.textContent = `${I18n.get('priceCard_rrp')} ${this.priceText(r.rrp)}`;
                     this.rrpEl.style.textDecoration = 'line-through';
                     this.rrpEl.style.display = 'block';
                 } else if (pc.showRrp && r.secondary) {
@@ -6008,21 +5888,18 @@ const SCRIPT_LOGS_ENABLED = false;
                     this.rrpEl.style.display = pc.showRrp ? 'block' : 'none';
                 }
 
-                /**
-                 * Cena z OBCEGO rynku musi być widoczna jako taka i dlatego ta
-                 * jedna adnotacja NIE podlega wyłącznikowi źródła: inaczej suma
-                 * zmiany niepostrzeżenie zmieszałaby waluty i witryny, a przy
-                 * dwóch rynkach w euro nie widać tego nawet po samej kwocie.
-                 */
+                // Adnotacja „z innego sklepu” nie podlega wyłącznikowi źródła —
+                // przy dwóch rynkach w euro nie widać różnicy nawet po kwocie.
                 const fromOther = (r.fallback && r.market)
                     ? I18n.get('priceCard_foundIn', { host: marketplace(r.market).host.replace(/^www\./, '') })
                     : '';
                 const bits = [];
                 if (pc.showSource) bits.push(r.source);
+                // Przy przeliczeniu cena ze sklepu zostaje do wglądu w wierszu
+                // źródła — dla kogoś, kto porównuje kartę ze stroną Amazonu.
+                if (pc.showSource && price && this.priceText(price).startsWith('≈')) bits.push(price.text);
                 if (fromOther) bits.push(fromOther);
-                // Czas ma własny wyłącznik i działa niezależnie od nazwy źródła:
-                // przełącznik, który nic nie robi, dopóki nie włączy się innego,
-                // jest gorszy niż brak przełącznika.
+                // Czas ma własny wyłącznik, niezależny od nazwy źródła.
                 if (pc.showLatency) bits.push(`${r.ms}ms`);
                 if (pc.showSource && r.stale) bits.push(I18n.get('priceCard_cached'));
                 this.setLine(this.srcEl, bits.join(' · '));
@@ -6036,9 +5913,11 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.priceEl.textContent = '—';
                 this.rrpEl.style.display = 'block';
                 this.rrpEl.style.textDecoration = 'none';
-                // W trybie 'ocr' blokada obrazka znaczy nie „nie ma wykresu”,
-                // tylko „nie ma skąd przeczytać ceny” — dla człowieka to różne rzeczy.
-                const ocrMode = pc.source === 'ocr';
+                // Gdy cena pochodzi z obrazka, jego blokada znaczy nie „nie ma
+                // wykresu”, tylko „nie ma skąd przeczytać ceny” — dla człowieka
+                // to różne rzeczy.
+                const mode = PriceSources.mode(pc.source);
+                const ocrMode = !!(mode && mode.readsImage);
                 this.rrpEl.textContent = I18n.get(
                     both ? 'priceCard_cspBoth'
                          : (this.csp.img ? (ocrMode ? 'priceCard_cspOcr' : 'priceCard_cspImg')
@@ -6053,7 +5932,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.priceEl.style.display = 'none';
                 this.rrpEl.style.display = 'none';
                 this.rrpEl.style.textDecoration = 'none';
-                this.srcEl.textContent = I18n.get('priceCard_jinaOff');
+                this.srcEl.textContent = I18n.get('priceCard_textOff');
                 return;
             }
 
@@ -6082,7 +5961,7 @@ const SCRIPT_LOGS_ENABLED = false;
             return {
                 'moduł cen': priceModuleOn() ? 'włączony' : 'WYŁĄCZONY (sieć nieużywana)',
                 'zapytań tekstowych': `${this.requestCount} / ${cap(CONFIG.PRICE_MAX_REQUESTS_PER_SESSION)}`,
-                'obrazków Keepa': `${this.imageCount} / ${cap(CONFIG.PRICE_MAX_IMAGE_REQUESTS)}`,
+                'obrazków': `${this.imageCount} / ${cap(CONFIG.PRICE_MAX_IMAGE_REQUESTS)}`,
                 'ASIN w pamięci sesji': this.cache.size,
                 'udanych': [...this.cache.values()].filter(r => r.status === 'ok').length,
                 'na ekranie': this.shownAsin,
@@ -6097,39 +5976,26 @@ const SCRIPT_LOGS_ENABLED = false;
     // ==========================================
     const InputManager = {
         /**
-         * Ostatnie naciśnięte znaki, jako ŁAŃCUCH, a nie tablica.
-         *
-         * Wcześniej była tablica sklejana przez join('') przy każdym
-         * naciśnięciu. Łańcuch z slice() robi to samo bez tworzenia tablicy
-         * pośredniej — a to kod, który chodzi na każdy klawisz przez całą
-         * dziesięciogodzinną zmianę.
+         * Ostatnie naciśnięte znaki — łańcuch przycinany slice(), bez tablicy
+         * pośredniej (kod chodzi na każdy klawisz przez całą zmianę).
          */
         seqBuffer: '',
         /** Najdłuższe hasło — tyle znaków trzeba pamiętać i ani znaku więcej. */
         _maxPasswordLen: 0,
         /**
-         * Hasła pogrupowane po OSTATNIM znaku.
-         *
-         * Sedno optymalizacji. Bez tego każde naciśnięcie klawisza porównywałoby
-         * bufor z każdym hasłem po kolei. Tak porównanie w ogóle się nie zaczyna,
-         * dopóki naciśnięty znak nie jest ostatnim znakiem któregoś z haseł —
-         * czyli przy zwykłym pisaniu prawie nigdy. Przy 'GORDONPAULE' i 'BOMBA'
-         * pracę uruchamiają wyłącznie litery E i A.
-         *
-         * Mapa buduje się RAZ, w init(), a nie przy każdym klawiszu.
+         * Hasła pogrupowane po ostatnim znaku. Porównanie z buforem zaczyna się
+         * tylko wtedy, gdy naciśnięty znak kończy któreś hasło — przy
+         * 'GORDONPAULE' i 'BOMBA' tylko przy E i A. Mapa buduje się raz, w init().
          */
         _passwordsByLastChar: null,
         init() {
-            // 8.3.0: obsługa jest nazwana — potrzebna do Main.teardown().
+            // Obsługa nazwana — potrzebna do Main.teardown().
             this.onKeyDown = (e) => {
                 if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return;
 
-                // AUTOPOWTARZANIE. Wciśnięty klawisz generuje keydown dziesiątki
-                // razy na sekundę i do 8.3.0 każde takie zdarzenie dawało +1 do
-                // licznika, z zapisem do localStorage. Dla licznika, dla którego
-                // napisany jest cały skrypt, to wprost psucie danych roboczych:
-                // prawy Shift, jeden z domyślnych wariantów, łatwo przycisnąć
-                // przypadkiem. Hasło dostępu autopowtarzanie też zaśmieca.
+                // Autopowtarzanie pomijamy: przytrzymany klawisz daje dziesiątki
+                // keydown na sekundę, a każde byłoby +1 do licznika (prawy Shift
+                // łatwo przycisnąć przypadkiem) i śmieciem w buforze haseł.
                 if (e.repeat) return;
 
                 if (store.userConfig.keyboardShortcuts.INCREMENT !== 'None' && e.code === store.userConfig.keyboardShortcuts.INCREMENT) {
@@ -6139,21 +6005,15 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
 
                 /**
-                 * HASŁA DOSTĘPU (patrz SETTINGS_ACCESS_PASSWORDS na górze pliku).
+                 * Hasła dostępu (SETTINGS_ACCESS_PASSWORDS w nagłówku pliku).
                  *
-                 * Bufor ma tyle znaków, ile NAJDŁUŻSZE hasło, i przesuwa się jak
-                 * okno. Hasło uznaje się za wpisane, gdy bufor KOŃCZY SIĘ na nim —
-                 * dzięki temu wpisywanie czegokolwiek wcześniej niczego nie psuje,
-                 * a hasła różnej długości żyją na jednej liście bez osobnych
-                 * buforów.
+                 * Bufor ma długość najdłuższego hasła i przesuwa się jak okno;
+                 * hasło jest wpisane, gdy bufor się na nim kończy. Po trafieniu
+                 * bufor jest czyszczony — inaczej hasło będące końcówką innego
+                 * zadziałałoby dwa razy, a toggle() otworzyłby i zamknął panel.
                  *
-                 * Po trafieniu bufor jest czyszczony. To nie porządki: bez tego
-                 * hasło, które jest końcówką innego, zadziałałoby dwa razy pod
-                 * rząd, a `toggle()` otworzyłby i natychmiast zamknął panel.
-                 *
-                 * To nie jest zabezpieczenie kryptograficzne i nie ma nim być:
-                 * chodzi wyłącznie o to, żeby panel nie otwierał się przypadkiem
-                 * podczas normalnej pracy ze skanerem.
+                 * To nie jest zabezpieczenie kryptograficzne — chodzi tylko o to,
+                 * żeby panel nie otwierał się przypadkiem przy pracy ze skanerem.
                  */
                 if (this._maxPasswordLen > 0 && e.key.length === 1) {
                     const ch = e.key.toUpperCase();
@@ -6170,12 +6030,9 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
             };
             /**
-             * Przygotowanie haseł. Robi się RAZ, przy starcie: lista z góry pliku
-             * jest stała przez całe życie egzemplarza, więc liczenie jej przy
-             * każdym naciśnięciu klawisza byłoby czystą stratą.
-             *
-             * Kolejność w grupie zostaje taka, jak w CONFIG — od najdłuższego —
-             * więc gdy w jednym naciśnięciu pasuje kilka haseł, wygrywa dłuższe.
+             * Przygotowanie haseł — raz, przy starcie. Kolejność w grupie jak
+             * w CONFIG (od najdłuższego), więc przy kilku trafieniach naraz
+             * wygrywa dłuższe hasło.
              */
             const passwords = CONFIG.SETTINGS_PANEL_ACCESS_PASSWORDS || [];
             this._passwordsByLastChar = new Map();
@@ -6191,7 +6048,7 @@ const SCRIPT_LOGS_ENABLED = false;
         },
         /**
          * @param {number} delta
-         * @param {{manual?: boolean}} [opts] — `manual` znaczy „człowiek poprawia
+         * @param {{manual?: boolean}} [opts] - `manual` znaczy „człowiek poprawia
          *   to, czego program nie zobaczył”. Taka paczka wchodzi do zadania
          *   inaczej niż zaliczona automatycznie: razem z licznikiem „poza
          *   mianownikiem”, bo jej kierunku nikt nie zna (patrz TaskManager).
@@ -6200,36 +6057,31 @@ const SCRIPT_LOGS_ENABLED = false;
             const cid = store.currentTabInstanceId;
             const cur = store.tabCounters[cid] || 0;
             const next = Math.max(0, cur + delta);
-            const applied = next - cur;
             if (opts.manual) {
-                TaskManager.adjustManual(cid, applied);
-                store.tabNeutral[cid] = TaskManager.shiftTotal(cid, 'neutral');
-                StorageManager.saveNeutral(cid, store.tabNeutral[cid]);
-            } else {
-                TaskManager.addItem(cid);
+                // Liczniki zmiany (paczki, sprzedane, poza mianownikiem) idą
+                // z zadań — odjęcie zmienia też sprzedane (patrz _shrink).
+                TaskManager.adjustManual(cid, next - cur);
+                TaskManager.syncShift(cid);
+                return;
             }
-            store.tabCounters[cid] = next;
-            StorageManager.saveCounter(cid, next);
+            TaskManager.addItem(cid);
+            Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_COUNTER, store.tabCounters, cid);
             // Przerysowanie wywołuje sam zapis do stanu (onStorePaths po
-            // 'tabCounters'), więc jawnego wywołania renderContent() już tu nie ma:
-            // dawało dwa pełne rendery na każdy przedmiot.
+            // 'tabCounters') — jawne renderContent() dałoby drugi render.
         }
     };
 
     const AutoTrigger = {
         observer: null,
         debouncedScan: null,
+        debouncedAttach: null,
 
         /**
-         * Czy węzeł należy do własnego interfejsu skryptu.
-         *
-         * To kluczowa poprawka 8.1.0. Okno statystyk, nakładka, wskaźnik i panel
-         * ustawień leżą w tym samym document.body, który obserwuje observer.
-         * Strony, dla których pisany był skrypt, przez całą zmianę są statyczne —
-         * czyli praktycznie JEDYNYM źródłem mutacji był sam skrypt, który
-         * przerysowuje statystykę raz na sekundę. Każda taka mutacja uruchamiała
-         * scan() z odczytem document.body.innerText, a to wymuszone przeliczenie
-         * geometrii całej strony, jedna z najdroższych operacji w DOM.
+         * Czy węzeł należy do własnego interfejsu skryptu. Okno statystyk,
+         * nakładka i panel leżą w obserwowanym document.body, a okno
+         * przerysowuje się co sekundę — bez tego filtra każda taka mutacja
+         * uruchamiałaby scan() z odczytem innerText (przeliczenie geometrii
+         * całej strony).
          */
         isOwnNode(node) {
             if (!node) return false;
@@ -6256,24 +6108,18 @@ const SCRIPT_LOGS_ENABLED = false;
 
         init() {
             this.attach();
-            // 8.1.0: odtwarzanie observera opakowane w debounce. Wcześniej wisiało
-            // na „surowej” zmianie stanu i przeciąganie suwaka interwału skanowania
-            // wywoływało dziesiątki disconnect/observe pod rząd.
-            bus.on('store:changed:userConfig.triggerMutationDebounceMs',
-                Utils.debounce(() => this.attach(), 500));
+            // Odtwarzanie observera z debounce — przeciąganie suwaka interwału
+            // dawałoby dziesiątki disconnect/observe. Uchwyt na obiekcie, żeby
+            // rozbiórka mogła go zgasić.
+            this.debouncedAttach = Utils.debounce(() => this.attach(), 500);
+            bus.on('store:changed:userConfig.triggerMutationDebounceMs', this.debouncedAttach);
         },
 
         scan() {
             const txt = document.body.innerText || '';
-            /**
-             * Kierunek czyta się PIERWSZY i to jest ważne (9.0.0).
-             *
-             * Kod sortowania i wyzwalacz końcowy nierzadko lądują w jednej klatce:
-             * ekran przerysował się w całości i „Przypisz nowy”, i „Zeskanuj
-             * CRITS-POZ1” widać jednocześnie. Odczytawszy kierunek przed
-             * licznikiem, zdążymy postawić znak wprost w momencie tworzenia wpisu,
-             * zamiast doganiać go następnym skanem.
-             */
+            // Kierunek czyta się przed licznikiem: kod sortowania i wyzwalacz
+            // końcowy często przychodzą w jednej klatce, a wtedy znak staje od
+            // razu przy tworzeniu wpisu.
             Routing.observe(txt);
 
             if (CONFIG.PRE_TRIGGER_REGEX.test(txt)) store.uiFlags.itemInProgress = true;
@@ -6282,10 +6128,9 @@ const SCRIPT_LOGS_ENABLED = false;
                     InputManager.modifyCounter(1);
                     store.uiFlags.autoTriggerFound = true;
                     store.uiFlags.itemInProgress = false;
-                    // 8.4.0: przedmiot przeszedł PEŁNĄ ścieżkę — dopiero teraz jego
-                    // wartość trafia do dziennika. Zdarzenie emituje się właśnie
-                    // tutaj, a nie w modifyCounter(): skróty klawiszowe i ręczna
-                    // poprawka licznika dziennika nie napełniają.
+                    // Przedmiot przeszedł pełną ścieżkę — zdarzenie dla dziennika
+                    // idzie stąd, a nie z modifyCounter(), bo skróty i ręczne
+                    // poprawki dziennika nie napełniają.
                     bus.emit('item:completed');
                 }
             } else {
@@ -6305,9 +6150,8 @@ const SCRIPT_LOGS_ENABLED = false;
         identifyTab() {
             const fullUrl = window.location.href.toUpperCase();
 
-            // 1. Wyciągamy parametr gradingMode wyrażeniem regularnym.
-            // Obchodzi to ograniczenia URLSearchParams, gdy parametry są schowane
-            // za hashem (routing SPA).
+            // 1. Parametr gradingMode wyrażeniem regularnym — działa także, gdy
+            // parametry są za hashem (routing SPA), gdzie URLSearchParams ich nie widzi.
             const match = fullUrl.match(/[?&#]GRADINGMODE=([^&#]*)/);
             const gradingMode = match ? match[1] : null;
 
@@ -6315,8 +6159,7 @@ const SCRIPT_LOGS_ENABLED = false;
             Utils.log(`[DIAGNOSTICS] Extracted gradingMode: ${gradingMode}`);
 
             // Działy ręczne (bez `urlKeyword`, np. OTHER) nie mają swojej karty
-            // i nie biorą udziału w rozpoznawaniu — inaczej pierwszy taki wpis
-            // wywaliłby całe uruchomienie na `undefined.toUpperCase()`.
+            // i nie biorą udziału w rozpoznawaniu.
             const detectable = Object.values(CONFIG.KNOWN_TAB_TYPES).filter(t => !!t.urlKeyword);
 
             let known;
@@ -6327,10 +6170,8 @@ const SCRIPT_LOGS_ENABLED = false;
             }
 
             if (!known) {
-                // Zapasowo po podłańcuchu.
-                // KRYTYCZNIE WAŻNE: sortujemy klucze po długości malejąco.
-                // Gwarantuje to, że CRETURN_REFURB (14 znaków) sprawdzi się PRZED
-                // CRETURN (7 znaków).
+                // Zapasowo po podłańcuchu, od najdłuższego klucza — CRETURN_REFURB
+                // musi być sprawdzony przed CRETURN.
                 const sortedTypes = detectable.slice().sort((a, b) => b.urlKeyword.length - a.urlKeyword.length);
                 known = sortedTypes.find(t => fullUrl.includes(t.urlKeyword.toUpperCase()));
                 Utils.log(`[DIAGNOSTICS] Fallback substring match result:`, known ? known.key : 'NOT_FOUND');
@@ -6341,8 +6182,14 @@ const SCRIPT_LOGS_ENABLED = false;
                 store.currentTabInstanceId = known.key;
             } else {
                 store.currentTabType = CONFIG.UNKNOWN_TAB_TYPE_KEY;
-                store.currentTabInstanceId = sessionStorage.getItem(StorageManager.getKey(CONFIG.SESSION_STORAGE_TAB_INSTANCE_ID_KEY)) || Utils.generateId(CONFIG.UNKNOWN_TAB_INSTANCE_ID_PREFIX);
-                sessionStorage.setItem(StorageManager.getKey(CONFIG.SESSION_STORAGE_TAB_INSTANCE_ID_KEY), store.currentTabInstanceId);
+                // Identyfikator karty nierozpoznanej leży w sessionStorage, żeby
+                // przeżył F5. Gdy magazyn odmawia, identyfikator żyje w pamięci
+                // do końca strony — własny try, bo wyjątek zatrzymałby start.
+                const idKey = Persistence.getKey(CONFIG.SESSION_STORAGE_TAB_INSTANCE_ID_KEY);
+                let saved = null;
+                try { saved = sessionStorage.getItem(idKey); } catch (e) { Utils.error('sessionStorage niedostępny', e); }
+                store.currentTabInstanceId = saved || Utils.generateId(CONFIG.UNKNOWN_TAB_INSTANCE_ID_PREFIX);
+                try { sessionStorage.setItem(idKey, store.currentTabInstanceId); } catch (e) { Utils.error('Identyfikator karty nie został zapisany', e); }
                 if (!store.userConfig.customTabSettings[store.currentTabInstanceId]) {
                     store.userConfig.customTabSettings[store.currentTabInstanceId] = { displayName: `Tab (${store.currentTabInstanceId.substring(19, 23)})`, includeInGlobal: true };
                 }
@@ -6352,61 +6199,57 @@ const SCRIPT_LOGS_ENABLED = false;
             store.sessionConfig.activeTabInstances[store.currentTabInstanceId] = Date.now();
         },
         /**
-         * Póki zmiana nie jest rozpoznana, sprawdzać ją z timera.
-         * Jedyny realny przypadek: skrypt wklejono do konsoli parę minut przed
-         * otwarciem okna zmiany (np. o 18:17). W 8.0.0 ShiftManager.update()
-         * wywoływał się dokładnie raz i taka karta zostawała bez zmiany do końca.
-         * Sprawdzanie idzie TYLKO póki zmiany nie ma, więc wyzerować już
-         * trwającej zmiany ten timer nie może.
+         * Sprawdzanie zmiany z timera, przez cały czas życia skryptu.
+         *
+         * Obsługuje skrypt wklejony tuż przed otwarciem okna zmiany (18:17)
+         * i kartę otwartą przez noc na stanowisku bez resetu sesji — ponowne
+         * kliknięcie zakładki na działającej stronie jest ignorowane, więc bez
+         * timera następna zmiana liczyłaby się do poprzedniej.
+         *
+         * Bezpieczne o każdej porze: update() zeruje dane tylko wtedy, gdy zegar
+         * wskazuje inną zmianę niż zapisana; w trakcie tej samej zmiany (także
+         * po północy) wylicza ten sam początek, a w martwej strefie nic nie
+         * robi (tests/26-shift-boundaries.test.js).
          */
         shiftWatchTimer: null,
         startShiftWatch() {
-            if (store.sessionConfig.shiftType) return;
-            // 8.3.0: uchwyt timera trzyma Main. Wcześniej żył tylko w zmiennej
-            // lokalnej i gdyby zmiana nigdy nie została rozpoznana (skrypt
-            // wklejono w dzień wolny), nie było czym zatrzymać przeglądu.
+            // Uchwyt timera trzyma Main, żeby rozbiórka mogła go zatrzymać.
             clearInterval(this.shiftWatchTimer);
-            this.shiftWatchTimer = setInterval(() => {
-                ShiftManager.update();
-                if (store.sessionConfig.shiftType) {
-                    clearInterval(this.shiftWatchTimer);
-                    this.shiftWatchTimer = null;
-                    Utils.log('Zmiana rozpoznana przez timer oczekiwania.');
-                }
-            }, CONFIG.SHIFT_RETRY_INTERVAL_MS);
+            this.shiftWatchTimer = setInterval(() => ShiftManager.update(), CONFIG.SHIFT_RETRY_INTERVAL_MS);
         },
 
         /**
-         * Rozbiórka do połowy postawionego skryptu (8.3.0).
-         *
-         * Wcześniej catch w init() jedynie cofał flagę uruchomienia na false. Ale
-         * jeśli awaria zdarzyła się PO utworzeniu interfejsu, w stronie żyły już
-         * okno statystyk ze swoim setInterval, MutationObserver i nasłuchy
-         * zdarzeń. Powtórne wklejenie poprawionego pliku — a to wprost zalecany
-         * sposób naprawy — stawiało DRUGI egzemplarz z własnym stanem i drugim
-         * obserwatorem, a oba zwiększały ten sam klucz localStorage.
+         * Rozbiórka egzemplarza — także postawionego do połowy. Awaria po
+         * utworzeniu interfejsu zostawia w stronie timery, MutationObserver
+         * i nasłuchy; bez rozbiórki powtórne wklejenie pliku postawiłoby drugi
+         * egzemplarz, a oba zwiększałyby ten sam klucz localStorage.
          */
         teardown() {
             if (AutoTrigger.observer) { AutoTrigger.observer.disconnect(); AutoTrigger.observer = null; }
             if (StatsWindowRenderer.tickTimer) { clearInterval(StatsWindowRenderer.tickTimer); StatsWindowRenderer.tickTimer = null; }
             if (this.shiftWatchTimer) { clearInterval(this.shiftWatchTimer); this.shiftWatchTimer = null; }
             if (InputManager.onKeyDown) document.removeEventListener('keydown', InputManager.onKeyDown, true);
-            if (StorageManager.onStorage) window.removeEventListener('storage', StorageManager.onStorage);
+            if (Persistence.onStorage) window.removeEventListener('storage', Persistence.onStorage);
             if (PriceCard.onCspViolation) document.removeEventListener('securitypolicyviolation', PriceCard.onCspViolation);
             if (this.onPageHide) { window.removeEventListener('pagehide', this.onPageHide); this.onPageHide = null; }
-            // 9.1.0: pojedyncze timery też gasimy. Wcześniej przeżywały rozbiórkę
-            // i po sekundzie-dwóch ruszały render() zdjętego już interfejsu — na
-            // starym egzemplarzu dawało to strumień wyjątków dokładnie w chwili,
-            // gdy wklejano poprawiony plik.
+            // Jednorazowe timery też — inaczej po chwili ruszyłyby render()
+            // zdjętego interfejsu.
             clearTimeout(SettingsPanel._rerenderTimer);
             clearTimeout(Notifier._hideTimer);
             clearTimeout(ValueLog._archiveTimer);
             clearTimeout(ValueLog._writeBackTimer);
             ValueLog._archiveTimer = ValueLog._writeBackTimer = null;
+            // Odłożone wywołania debounce — po rozbiórce autozapis nadpisałby
+            // magazyn starym stanem, a skan dopisałby paczkę do klucza nowego
+            // egzemplarza (test w 27-pending-writes).
+            Persistence.scheduleSave.cancel();
+            Persistence.debouncedLoad.cancel();
+            if (AutoTrigger.debouncedScan) AutoTrigger.debouncedScan.cancel();
+            if (AutoTrigger.debouncedAttach) AutoTrigger.debouncedAttach.cancel();
             document.querySelectorAll(`[id^="${CONFIG.SCRIPT_ID_PREFIX}"]`).forEach(el => el.remove());
             bus.clear();
-            // Dostęp z konsoli należał do zdjętego egzemplarza: zostawić go znaczy
-            // trzymać w pamięci cały stan i wszystkie menedżery.
+            // SH należał do zdjętego egzemplarza — zostawiony trzymałby w pamięci
+            // cały stan.
             try { delete window[CONFIG.SCRIPT_ID_PREFIX + 'API']; delete window.SH; } catch (e) { /* własność mogła być niekasowalna — rozbiórki to nie zatrzymuje */ }
             // Skrót `config` zdejmujemy TYLKO wtedy, gdy to my go postawiliśmy:
             // inaczej rozbiórka zabrałaby stronie jej własną funkcję.
@@ -6414,9 +6257,8 @@ const SCRIPT_LOGS_ENABLED = false;
                 try { delete window.config; } catch (e) { /* jak wyżej */ }
                 this.ownsConfigAlias = false;
             }
-            // Egzemplarza na stronie już nie ma — więc i zamek na powtórne
-            // uruchomienie się zdejmuje, inaczej poprawionego pliku nie dałoby się
-            // już wkleić.
+            // Zamek na powtórne uruchomienie też znika — inaczej poprawionego
+            // pliku nie dałoby się wkleić.
             window[CONFIG.SCRIPT_ID_PREFIX + 'INIT'] = false;
             Utils.log('Egzemplarz zdjęty ze strony. Można wkleić skrypt od nowa.');
         },
@@ -6424,21 +6266,12 @@ const SCRIPT_LOGS_ENABLED = false;
         init() {
             if (window[CONFIG.SCRIPT_ID_PREFIX + 'INIT']) {
                 /**
-                 * Kod ustawień z zakładki wchodzi MIMO TO — powtórne kliknięcie
-                 * zakładki z innym kodem jest jedynym sposobem zmiany wyglądu
-                 * bez przeładowania strony, a przeładowanie w środku zmiany
-                 * kosztuje tyle, co wklejenie skryptu od nowa.
-                 *
-                 * Ale nakłada się na egzemplarz, KTÓRY JUŻ STOI, przez jego
-                 * własne `SH.config`. Ten, który właśnie się nie uruchomi, ma
-                 * osobny stan w swoim domknięciu: zapis do niego poszedłby
-                 * w próżnię, a przy okazji nadpisałby w magazynie ustawienia
-                 * tamtego egzemplarza.
-                 *
-                 * Gdy na stronie stoi wydanie starsze niż 1.2.0, `config` tam
-                 * nie istnieje — wtedy kod po prostu przepada i trzeba odświeżyć
-                 * stronę. Zgadywanie po wnętrznościach cudzego egzemplarza
-                 * kosztowałoby więcej, niż jest warte.
+                 * Skrypt już działa, ale kod ustawień z zakładki i tak wchodzi —
+                 * powtórne kliknięcie zakładki z innym kodem zmienia wygląd bez
+                 * przeładowania strony. Nakłada się go przez `SH.config`
+                 * działającego egzemplarza: ten, który się nie uruchomi, ma
+                 * własny stan i zapis do niego nadpisałby ustawienia tamtego.
+                 * Gdy działający egzemplarz nie ma `config`, kod przepada.
                  */
                 const bootCode = ConfigCode.takeBoot();
                 const running = window[CONFIG.SCRIPT_ID_PREFIX + 'API'];
@@ -6451,47 +6284,31 @@ const SCRIPT_LOGS_ENABLED = false;
             window[CONFIG.SCRIPT_ID_PREFIX + 'INIT'] = true;
 
             try {
-                StorageManager.purgeLegacyKeys();
-                StorageManager.purgeLegacySharedKeys();
+                Persistence.purgeLegacyKeys();
+                Persistence.purgeLegacySharedKeys();
 
-                // KOLEJNOŚĆ JEST WAŻNA. W 8.0.0 loadAll() szedł pierwszy, a czyta
-                // on ustawienia po kluczu store.currentTabInstanceId, który w tym
-                // momencie był jeszcze null. Przez to wygląd okna (pozycja, kolory,
-                // rozmiary, widoczność linii) nie przywracał się po przeładowaniu
-                // strony nigdy.
+                // Kolejność jest ważna: loadAll() czyta ustawienia karty po
+                // store.currentTabInstanceId, więc karta musi być rozpoznana
+                // wcześniej.
                 this.identifyTab();
-                StorageManager.loadAll();
+                Persistence.loadAll();
 
                 /**
-                 * Kod ustawień z zakładki — PO wczytaniu magazynu, PRZED
-                 * postawieniem interfejsu.
-                 *
-                 * Po wczytaniu, bo inaczej `loadAll()` nadpisałby to, co przyszło
-                 * z kodu, zapisanym wcześniej stanem. Przed interfejsem, bo okno
-                 * ma się narysować od razu takie, jakiego człowiek chce — a nie
-                 * mrugnąć domyślnym wyglądem. Zapis do magazynu robi `saveState()`
-                 * kilka linii niżej, po podniesieniu `store.initialized`.
+                 * Kod ustawień z zakładki — po wczytaniu magazynu (inaczej
+                 * loadAll() by go nadpisał) i przed postawieniem interfejsu (okno
+                 * rysuje się od razu we właściwym wyglądzie). Zapis robi
+                 * saveState() niżej, po podniesieniu `store.initialized`.
                  */
                 ConfigCode.applyBoot();
 
                 // Dane poprzedniej zmiany na maszynach bez resetu sesji.
-                // Dziennik wartości podnosi się PRZED sprawdzeniem zmiany:
-                // SessionReset.resetItemData() go czyści i do tego momentu musi
-                // być już wczytany, inaczej wyczyści się pustka, a wpisy
-                // poprzedniej zmiany zostaną w localStorage.
+                // Dziennik wczytuje się przed sprawdzeniem zmiany — reset czyści
+                // go razem z localStorage, więc musi być już wczytany.
                 ValueLog.load();
                 Routing.startItem('uruchomienie skryptu');
 
-                /**
-                 * KURSY WALUT BEZ SIECI (9.2.0).
-                 *
-                 * Tu była jedyna rzecz, która wychodziła do internetu od razu po
-                 * uruchomieniu. Teraz na starcie czyta się wyłącznie to, co leży
-                 * w localStorage, a jeśli nie leży nic — tablicę wpisaną w plik.
-                 *
-                 * Pobranie na żywo robi PriceModule.enable(), czyli moment,
-                 * w którym człowiek świadomie włącza moduł cen.
-                 */
+                // Kursy walut bez sieci: z localStorage albo tablica wbudowana.
+                // Pobranie na żywo robi dopiero PriceModule.enable().
                 FxRates.initOffline();
 
                 SessionReset.checkStaleOnBoot();
@@ -6500,19 +6317,13 @@ const SCRIPT_LOGS_ENABLED = false;
                 ShiftManager.update();
                 SessionReset.pruneTabInstances(false);
 
-                /**
-                 * Zadania PO ustaleniu zmiany, a przed pierwszym przedmiotem.
-                 *
-                 * Po ustaleniu, bo zadanie domyślne zaczyna się razem ze zmianą,
-                 * a `shiftCalculatedStartTime` liczy dopiero ShiftManager.update()
-                 * linijkę wyżej. Przed przedmiotem, bo licznik nie ma prawa
-                 * zaliczyć paczki, dla której nie ma gdzie jej zapisać —
-                 * AutoTrigger rusza znacznie niżej.
-                 */
+                // Zadania po ustaleniu zmiany (zadanie domyślne zaczyna się
+                // razem z nią) i przed pierwszym przedmiotem (paczka musi mieć
+                // gdzie się zapisać — AutoTrigger rusza niżej).
                 TaskManager.init();
 
                 store.initialized = true;
-                StorageManager.saveState();
+                Persistence.saveState();
 
                 CSSManager.init();
                 StatsWindowRenderer.init();
@@ -6524,75 +6335,59 @@ const SCRIPT_LOGS_ENABLED = false;
                 Notifier.init();
                 InputManager.init();
                 AutoTrigger.init();
-                StorageManager.listen();
+                Persistence.listen();
 
-                // 8.4.0: przedmiot przeszedł pełną ścieżkę — zapisujemy jego
-                // wartość. Cena bierze się z pamięci sesji; jeśli jeszcze nie
-                // przyjechała, pozycja położy się bez ceny i dopisze się
-                // w resolve() po gotowości.
+                // Przedmiot przeszedł pełną ścieżkę — wpis do dziennika. Cena
+                // z pamięci karty; jeśli jeszcze nie przyszła, dopisze ją
+                // resolve() (ValueLog.fillPending).
                 bus.on('item:completed', () => {
                     const asin = PriceCard.shownAsin;
                     const r = asin ? PriceCard.cache.get(asin) : null;
                     const price = (r && r.status === 'ok' && r.current) ? r.current : null;
-                    // 9.1.0: add() zwraca id wpisu, a nie jego indeks. Dziennik
-                    // jest wspólny na wszystkie karty, scalanie przestawia pozycje
-                    // po czasie i indeks przestał być adresem.
+                    // add() zwraca id wpisu, nie indeks — scalanie przestawia pozycje.
                     const entryId = ValueLog.add(asin, price, store.currentTabInstanceId);
-                    // Znak stawia Routing: albo od razu (kod już znany), albo
-                    // później, gdy kod pojawi się na ekranie.
-                    //
-                    // Wołamy ZAWSZE, także gdy wpisu dziennika nie ma (entryId
-                    // null przy wyłączonym module cen). Do 1.0.0 stał tu warunek
-                    // `if (entryId)` i był poprawny, dopóki jedynym odbiorcą
-                    // kierunku był dziennik. Od czasu procentu sprzedaży kierunek
-                    // ma drugiego odbiorcę, który sieci nie potrzebuje — a przy
-                    // ustawieniach domyślnych to jest JEDYNY odbiorca.
+                    // Znak stawia Routing — od razu albo gdy kod się pojawi.
+                    // Wołane zawsze, także bez wpisu (entryId null bez modułu
+                    // cen): procent sprzedaży potrzebuje kierunku bez sieci.
                     Routing.onCompleted(entryId);
                 });
 
                 /**
-                 * Początek nowego przedmiotu do ewidencji kierunku. Sygnały są dwa
-                 * i oba są potrzebne, dokładnie z tego samego powodu, co w karcie
-                 * ceny:
-                 *   - wzniesienie flagi `poniżej` pokrywa zwykły cykl;
-                 *   - zmiana ASIN pokrywa przedmiot przerwany, po którym flaga
-                 *     zostaje wzniesiona i przejścia false->true nie będzie.
+                 * Początek nowego przedmiotu dla ewidencji kierunku — dwa sygnały:
+                 *   - podniesienie flagi `poniżej` — zwykły cykl;
+                 *   - zmiana ASIN — przedmiot przerwany, po którym flaga zostaje
+                 *     podniesiona i przejścia false->true nie będzie.
                  */
-                // `poniżej` to PRAWDZIWA granica przedmiotu, więc tu zamyka się
-                // też wiszący Secondary-Sorting: uściślenie nie przyszło, czyli
-                // przedmiot jest niesprzedażowy (patrz Routing.closeAmbiguous).
+                // `poniżej` to prawdziwa granica przedmiotu, więc zamyka też
+                // wiszący Secondary-Sorting jako niesprzedaż (Routing.closeAmbiguous).
                 bus.on('store:changed:uiFlags.itemInProgress', (d) => {
                     if (d.value === true) Routing.startItem('poniżej', { closeAmbiguous: true });
                 });
-                // Zmiana ASIN granicą NIE jest: linia uściślająca czasem przychodzi
-                // już po tym, jak na ekranie jest nowy produkt.
+                // Zmiana ASIN granicą nie jest — linia uściślająca bywa spóźniona.
                 bus.on('price:asinChanged', (d) => Routing.startItem('zmienił się ASIN ' + d.asin));
 
-                // Wyjście ze strony: archiwum pisze się z opóźnieniem (patrz
-                // ValueLog.scheduleArchive), więc ostatnia paczka przedmiotów
-                // inaczej by do niego nie zdążyła. Sam dziennik pozycji jest
-                // w tym momencie już w localStorage — on pisze się od razu.
-                this.onPageHide = () => { try { ValueLog.flushArchive(); } catch (e) { /* strona już się zamyka — nie ma komu zgłosić błędu */ } };
+                // Wyjście ze strony: trzy zapisy czekają na timer — archiwum,
+                // autozapis ustawień (sekunda) i dopisanie do wspólnego dziennika
+                // (400 ms). Bez dokończenia tutaj ostatnie zmiany ginęłyby przy F5.
+                this.onPageHide = () => {
+                    try {
+                        Persistence.scheduleSave.flush();
+                        ValueLog.flushWriteBack();
+                        ValueLog.flushArchive();
+                    } catch (e) { /* strona już się zamyka — nie ma komu zgłosić błędu */ }
+                };
                 window.addEventListener('pagehide', this.onPageHide);
 
-                // Autozapis ustawień. Do 8.1.0 stan zapisywał się dopiero przy
-                // zamykaniu panelu i przeładowanie strony w środku zmiany go gubiło.
-                // 8.3.0: zapisują się tylko te gałęzie, które saveState() naprawdę
-                // pisze. uiFlags nie są trwałe, a liczniki idą osobnym kluczem
-                // przez saveCounter() — obie gałęzie wcześniej na darmo budziły
-                // autozapis.
+                // Autozapis tylko dla gałęzi, które saveState() naprawdę pisze:
+                // uiFlags nie są trwałe, a liczniki mają własne klucze.
                 onStorePaths(['userConfig', 'sessionConfig', 'localTabConfig'],
-                             () => StorageManager.scheduleSave());
+                             () => Persistence.scheduleSave());
 
                 /**
-                 * Skrót `config("0x…")` bez przedrostka SH.
-                 *
-                 * Zakładka w przeglądarce wkleja się jednym ciągiem i krótsza
-                 * nazwa jest tam wygodniejsza. Nazwa jest jednak POSPOLITA,
-                 * a strona nie jest nasza — więc zajmujemy ją TYLKO wtedy, gdy
-                 * jest wolna. Gdy T-REX ma własne `window.config`, zostaje
-                 * `SH.config(...)`, które nie koliduje z niczym i dlatego to
-                 * ono stoi w kopiowanym z panelu odnośniku.
+                 * Skrót `config("0x…")` bez przedrostka SH. Nazwa jest pospolita,
+                 * a strona nie jest nasza — zajmujemy ją tylko wtedy, gdy jest
+                 * wolna. `SH.config(...)` działa zawsze i to on stoi w zakładce
+                 * kopiowanej z panelu.
                  */
                 if (typeof window.config === 'undefined') {
                     window.config = (code) => ConfigCode.apply(code);
@@ -6607,36 +6402,27 @@ const SCRIPT_LOGS_ENABLED = false;
                 // jest narzędziem roboczym, a nie pozostałością po debugowaniu.
                 window[CONFIG.SCRIPT_ID_PREFIX + 'API'] = window.SH = {
                     store, CONFIG, PriceCard, ShiftManager, SessionReset,
-                    StorageManager, SettingsPanel, AutoTrigger, I18n,
-                    // 8.4.0
-                    KeepaOCR, ValueLog, FxRates, Routing,
-                    // 9.2.0 — potrzebne testom i diagnostyce
+                    Persistence, SettingsPanel, AutoTrigger, I18n,
+                    KeepaOCR, PriceSources, PriceNet, ValueLog, FxRates, Routing,
+                    // Potrzebne testom i diagnostyce.
                     Utils, PriceModule, StatsWindowRenderer, CSSManager, LINE_KEYS,
                     DEFAULT_LINE_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_USER_CONFIG,
                     priceModuleOn,
-                    // 1.1.0 — hasła dostępu. InputManager trzyma bufor i mapę
-                    // haseł, normalizeAccessPasswords pokazuje, co naprawdę
-                    // wyjdzie z listy wpisanej na górze pliku: po edycji warto
-                    // sprawdzić SH.normalizeAccessPasswords(['moje', 'hasła'])
-                    // zamiast zgadywać, czy literówka przeszła.
-                    InputManager, normalizeAccessPasswords,
+                    // Hasła dostępu: SH.normalizeAccessPasswords(['moje', 'hasła'])
+                    // pokazuje, co naprawdę wyjdzie z listy w nagłówku pliku.
+                    InputManager, UIBuilder, normalizeAccessPasswords,
                     /**
-                     * KOD KONFIGURACJI (1.2.0).
-                     *
-                     * Funkcje, a nie sam obiekt: `SH.config('0x…')` ma być
-                     * krótkim poleceniem do wklejenia w konsoli, a nie ścieżką
-                     * przez wnętrzności. Sam rejestr stoi niżej, pod własną
-                     * nazwą, dla testów i dla pytania „pod jakim numerem siedzi
-                     * to ustawienie”.
+                     * Kod ustawień: krótkie polecenia do konsoli. Sam rejestr
+                     * (SH.ConfigCode) — dla testów i pytania „pod jakim numerem
+                     * siedzi to ustawienie”.
                      */
                     config: (code) => ConfigCode.apply(code),
                     configCode: () => ConfigCode.encode(),
                     configLink: () => ConfigCode.link(),
                     ConfigCode,
                     /**
-                     * ZADANIA (1.3.0). `SH.tasks()` wypisuje podsumowanie
-                     * wszystkich zadań zmiany, reszta to sam menedżer — do
-                     * przełączania z konsoli, gdy panel jest akurat zamknięty.
+                     * Zadania: `SH.tasks()` wypisuje podsumowanie zmiany, menedżer
+                     * pozwala przełączać zadania z konsoli.
                      */
                     TaskManager,
                     tasks: () => TaskManager.info(),
@@ -6665,11 +6451,10 @@ const SCRIPT_LOGS_ENABLED = false;
                     marketplace: () => marketplace(),
                     productUrl: (asin) => productUrl(asin || PriceCard.shownAsin),
                     /**
-                     * Podnieść limity zapytań bez przeładowania strony.
-                     * Potrzebne, gdy zmiana okazała się dłuższa niż zakładano:
-                     * ceny przestają przychodzić, a przewklejać skryptu w środku
-                     * zmiany nie wolno — wyzerują się liczniki i dziennik.
+                     * Zmiana limitów zapytań bez przeładowania strony:
                      *   SH.setLimits({ images: 3000 })
+                     *
+                     * @param {{images?: number, text?: number}} [limits]
                      */
                     setLimits: ({ images, text } = {}) => {
                         if (typeof images === 'number') CONFIG.PRICE_MAX_IMAGE_REQUESTS = images;
@@ -6684,8 +6469,7 @@ const SCRIPT_LOGS_ENABLED = false;
                     },
                     /** Przeczytać cenę z wykresu teraz, z pominięciem pamięci. */
                     readPrice: (asin) => KeepaOCR.read(asin || PriceCard.shownAsin),
-                    // 8.3.0: Main dostępny z konsoli dla SH.Main.teardown() —
-                    // poprawnego zdjęcia do połowy postawionego egzemplarza.
+                    // SH.Main.teardown() — zdjęcie egzemplarza z konsoli.
                     Main,
                     priceStats: () => PriceCard.stats(),
                     /**
@@ -6693,51 +6477,38 @@ const SCRIPT_LOGS_ENABLED = false;
                      * naprawdę przechodzi. Asynchroniczna — wołać przez
                      * `await SH.cspReport()` albo `SH.cspReport().then(console.table)`.
                      *
-                     * 9.2.0: praktyczna część sprawdzenia (obrazek Keepa i zapytanie
-                     * do r.jina.ai) wychodzi w sieć, więc wymaga włączonego modułu
-                     * cen. Sam rozbiór polityki działa zawsze — nie wychodzi poza
+                     * Hosty i sprawdzenia faktyczne dają źródła ceny
+                     * (PriceSources.cspHosts, PriceSources.probes). Sprawdzenia
+                     * wychodzą w sieć, więc wymagają włączonego modułu cen.
+                     * Rozbiór polityki działa zawsze — nie wychodzi poza
                      * własną domenę.
                      */
                     cspReport: async () => {
                         const parsed = await PriceCard.readCsp();
-                        const HOSTS = {
-                            'graph.keepa.com': 'img-src',
-                            'r.jina.ai': 'connect-src',
-                            'api.keepa.com': 'connect-src',
-                            'raw.githubusercontent.com': 'connect-src',
-                        };
+                        const HOSTS = { ...PriceSources.cspHosts };
+                        // Host wydania — zakładka pobiera z niego skrypt.
+                        // Tylko wtedy, gdy ta kompilacja ma adres wydania.
+                        const release = /^https:\/\/([^/:]+)/.exec(CONFIG.RELEASE_URL);
+                        if (release) HOSTS[release[1]] = 'connect-src';
                         const verdict = {};
                         for (const [host, dir] of Object.entries(HOSTS)) {
                             verdict[`${host} (${dir})`] = PriceCard.cspAllows(parsed, dir, host);
                         }
 
-                        let imgTest = 'moduł cen wyłączony — sprawdzenie nie było wykonane';
-                        let netTest = 'moduł cen wyłączony — sprawdzenie nie było wykonane';
-                        if (priceModuleOn()) {
-                            // Praktyczne sprawdzenie: polityka polityką, a ważne
-                            // jest to, co naprawdę przechodzi.
-                            imgTest = await new Promise(res => {
-                                const im = new Image();
-                                im.referrerPolicy = 'no-referrer';
-                                im.onload = () => res(im.naturalWidth > 10 ? 'załadowany' : 'pusty');
-                                im.onerror = () => res('ZABLOKOWANY');
-                                setTimeout(() => res('przekroczony czas'), 8000);
-                                im.src = PriceCard.keepaUrl('B0915C748N');
-                            });
-                            try {
-                                const r = await fetch('https://r.jina.ai/https://example.com', {
-                                    headers: { 'x-cache-tolerance': '259200' },
-                                });
-                                netTest = 'przeszedł, HTTP ' + r.status;
-                            } catch (e) { netTest = 'ZABLOKOWANY (' + e.message + ')'; }
+                        // Praktyczne sprawdzenie: polityka polityką, a ważne
+                        // jest to, co naprawdę przechodzi.
+                        const checks = {};
+                        for (const probe of PriceSources.probes()) {
+                            checks['sprawdzenie faktyczne: ' + probe.label] = priceModuleOn()
+                                ? await probe.run()
+                                : 'moduł cen wyłączony — sprawdzenie nie było wykonane';
                         }
 
                         return {
                             'polityka wzięta z': parsed.source || 'polityki nie znaleziono',
                             'pełny tekst': parsed.raw || '—',
                             'rozbiór po hostach': verdict,
-                            'sprawdzenie faktyczne: obrazek Keepa': imgTest,
-                            'sprawdzenie faktyczne: zapytanie r.jina.ai': netTest,
+                            ...checks,
                             'zarejestrowane blokady': {
                                 obrazek: PriceCard.csp.img,
                                 zapytania: PriceCard.csp.net,
@@ -6754,7 +6525,7 @@ const SCRIPT_LOGS_ENABLED = false;
                             Utils.error('Moduł cen wyłączony. Włącz go: SH.priceOn()');
                             return Promise.resolve(null);
                         }
-                        return PriceCard.resolve(target, { manual: true });
+                        return PriceCard.resolve(target);
                     },
                 };
 
@@ -6763,12 +6534,11 @@ const SCRIPT_LOGS_ENABLED = false;
                     ? 'Moduł cen WŁĄCZONY — zapytania sieciowe dozwolone.'
                     : 'Moduł cen wyłączony: zapytań sieciowych nie było i nie będzie do ręcznego włączenia (SH.priceOn() albo panel ustawień).');
             } catch (e) {
-                // Bez tego jeden błąd na starcie wygląda jak „nic się nie stało”:
-                // przy uruchamianiu z konsoli to najczęstszy sposób stracenia
-                // pół godziny.
+                // Awaria startu zawsze w konsoli — inaczej wygląda jak „nic się
+                // nie stało”.
                 window[CONFIG.SCRIPT_ID_PREFIX + 'INIT'] = false;
-                // 8.3.0: sprzątamy po sobie wszystko, co zdążyliśmy postawić —
-                // inaczej powtórne wklejenie daje dwa działające egzemplarze naraz.
+                // Sprzątamy wszystko, co zdążyło stanąć — inaczej powtórne
+                // wklejenie dałoby dwa egzemplarze naraz.
                 try { this.teardown(); } catch (e2) { Utils.fatal('Rozbiórka po awarii nie powiodła się:', e2); }
                 Utils.fatal('Inicjalizacja nie powiodła się, skrypt nie działa:', e);
             }
@@ -6777,7 +6547,7 @@ const SCRIPT_LOGS_ENABLED = false;
 
     // ─── src/23-config-code.js ───
     // ==========================================
-    // 10. KOD KONFIGURACJI (1.2.0)
+    // 10. KOD KONFIGURACJI
     // ==========================================
     /**
      * PRZENOSZENIE USTAWIEŃ JEDNYM CIĄGIEM SZESNASTKOWYM.
@@ -6788,47 +6558,27 @@ const SCRIPT_LOGS_ENABLED = false;
      * albo od razu w zakładce przeglądarki, doklejony za wywołaniem skryptu.
      *
      * =====================================================================
-     * DLACZEGO TO NIE JEST STAŁY UKŁAD BITÓW
+     * FORMAT: SAMOOPISUJĄCE SIĘ REKORDY, A NIE STAŁY UKŁAD BITÓW
      * =====================================================================
-     * Pomysł „każde ustawienie dostaje swoje bity pod stałym adresem” jest
-     * kuszący i działa dokładnie do pierwszego wydania, w którym coś się zmieni.
-     * Załamuje się na trzech rzeczach naraz:
-     *
-     *   1. STARY SKRYPT, NOWY KOD. Doszło ustawienie, więc ciąg jest dłuższy.
-     *      Stary skrypt nie wie, gdzie kończy się to, co zna — bo przy stałym
-     *      układzie długość pola jest wiedzą, a nie częścią danych. Musi odrzucić
-     *      cały kod.
-     *   2. NOWY SKRYPT, STARY KOD. Trzeba pamiętać KAŻDY historyczny układ bitów
-     *      i wybierać go po numerze wersji. To rośnie w nieskończoność.
-     *   3. CZŁOWIEK. Przydzielanie offsetów bitowych ręcznie to praca, w której
-     *      pomyłka jest cicha: kod się wczyta, tylko ustawienia wylądują nie tam.
-     *
-     * Dlatego ciąg jest zbiorem SAMOOPISUJĄCYCH SIĘ REKORDÓW, a nie mapą bitów:
-     *
      *      [id: 2 bajty][długość: 1 bajt][wartość: tyle bajtów, ile podano]
      *
-     * Długość w każdym rekordzie załatwia punkt 1: nieznany rekord da się
-     * PRZESKOCZYĆ, nie rozumiejąc go. Stały, nigdy nierecyklingowany numer `id`
-     * załatwia punkt 2: nowy skrypt rozpoznaje stare rekordy po numerze, a nie
-     * po pozycji. Rejestr poniżej załatwia punkt 3: numer, ścieżka i typ stoją
-     * w jednej linii, obok siebie.
+     *   - długość w rekordzie pozwala przeskoczyć rekord nieznany, więc kod
+     *     z nowszego wydania wczyta się w starszym skrypcie;
+     *   - stały, nigdy nieużywany ponownie numer `id` pozwala nowemu skryptowi
+     *     rozpoznać stare rekordy bez pamiętania historycznych układów;
+     *   - numer, ścieżka i typ stoją w jednej linii rejestru, więc nie ma
+     *     ręcznego przydzielania offsetów, w którym pomyłka byłaby cicha.
      *
-     * To jest ten sam pomysł, na którym stoi protobuf, sprowadzony do rozmiaru
-     * tego projektu. Wejście i wyjście pozostaje takie, jak miało być: ciąg
+     * Ten sam pomysł co protobuf, w rozmiarze tego projektu. Na zewnątrz: ciąg
      * szesnastkowy, wielkość liter bez znaczenia.
      *
      * =====================================================================
      * KOD ZAWIERA TYLKO TO, CO RÓŻNI SIĘ OD WARTOŚCI DOMYŚLNYCH
      * =====================================================================
-     * I to jest druga decyzja, ważniejsza od formatu.
-     *
-     * Kod jest ŁATKĄ, a nie zdjęciem całej konfiguracji. Kto zmienił trzy rzeczy,
-     * ma w kodzie trzy rekordy. Skutek, dla którego to robimy, jest jednak inny
-     * niż długość ciągu: gdy w następnym wydaniu zmieni się wartość domyślna
-     * czegoś, czego ten człowiek nigdy nie ruszał, on tę nową wartość DOSTANIE.
-     * Przy zdjęciu całej konfiguracji zostałby na zawsze przy starych domyślnych,
-     * nie wiedząc o tym — dokładnie tak, jak dzieje się to z zapisaną
-     * konfiguracją w localStorage.
+     * Kod jest łatką, a nie zdjęciem konfiguracji: kto zmienił trzy rzeczy,
+     * ma trzy rekordy. Gdy w nowym wydaniu zmieni się wartość domyślna czegoś,
+     * czego człowiek nie ruszał, dostanie on nową wartość — przy zdjęciu
+     * całości zostałby na zawsze przy starej.
      *
      * =====================================================================
      * BEZPIECZEŃSTWO
@@ -6845,22 +6595,15 @@ const SCRIPT_LOGS_ENABLED = false;
         FORMAT: 0x01,
 
         /**
-         * KOD PODSTAWIONY PRZED URUCHOMIENIEM.
+         * Nazwa zmiennej okna z kodem podstawionym przed uruchomieniem.
          *
-         * Zakładka z ustawieniami (patrz `link`) najpierw wpisuje kod do okna
-         * pod tę nazwę, a dopiero potem ściąga i wykonuje plik. Dzięki temu
-         * ustawienia wchodzą WEWNĄTRZ `Main.init()`, zaraz po wczytaniu stanu
-         * z magazynu — czyli przed pierwszym rysowaniem okna.
+         * Zakładka (link) najpierw wpisuje tu kod, a dopiero potem pobiera
+         * i wykonuje plik — ustawienia wchodzą wewnątrz Main.init(), zaraz po
+         * wczytaniu magazynu i przed pierwszym rysowaniem okna. Wywołanie
+         * `SH.config` po pliku mogłoby trafić przed powstaniem `SH` (init czeka
+         * na DOMContentLoaded), a okno mrugnęłoby wyglądem domyślnym.
          *
-         * Wcześniejszy pomysł — wykonać plik, a zaraz za nim, w tej samej linii,
-         * `SH.config('0x…')` — miał dwie dziury. Po pierwsze `SH` powstaje
-         * dopiero w `Main.init()`, a ten czeka na `DOMContentLoaded`, gdy strona
-         * jeszcze się wczytuje: wywołanie tuż po wykonaniu pliku trafiało wtedy
-         * w niebyt. Po drugie nawet przy
-         * gotowej stronie okno zdążyło się narysować ustawieniami domyślnymi
-         * i dopiero potem przeskakiwało na swoje — widoczne mrugnięcie.
-         *
-         * Nazwa jest długa i z przedrostkiem skryptu, bo to cudza strona.
+         * Nazwa długa, z przedrostkiem skryptu — to cudza strona.
          */
         BOOT_GLOBAL: CONFIG.SCRIPT_ID_PREFIX + 'CONFIG_CODE',
 
@@ -6878,7 +6621,25 @@ const SCRIPT_LOGS_ENABLED = false;
             graphMode: ['legend', 'right', 'full'],
             language: ['pl', 'en', 'ru'],
             marketplace: ['de', 'co.uk', 'com', 'it', 'fr', 'es', 'nl', 'ca', 'se', 'com.be', 'pl'],
+            displayCurrency: ['native', 'EUR', 'PLN', 'GBP', 'SEK', 'USD', 'CAD'],
         },
+
+        /**
+         * NUMERY WYCOFANE — spalone na zawsze, nigdy nie wracają do REGISTRY.
+         *
+         *   0x0200  priceCard.moduleEnabled — główny wyłącznik sieci
+         *   0x0202  priceCard.source        — dokąd idą zapytania (np. r.jina.ai)
+         *
+         * Kod ustawień krąży po czatach i każdy może go złożyć ręcznie — suma
+         * kontrolna niczego nie uwierzytelnia. Kod nie może więc decydować, czy
+         * i dokąd skrypt wychodzi do sieci: z tymi numerami włączałby moduł cen
+         * i wysyłał ASIN-y do obcego serwisu, w zakładce jeszcze przed
+         * narysowaniem okna. Rozstrzyga się to tylko w panelu, ręką.
+         *
+         * Kody z tymi numerami nadal się wczytują — te rekordy są pomijane
+         * i liczone w sprawozdaniu jako wycofane.
+         */
+        RETIRED_IDS: [0x0200, 0x0202],
 
         /**
          * REJESTR USTAWIEŃ — jedyne miejsce, które trzeba ruszyć, dodając
@@ -6891,10 +6652,9 @@ const SCRIPT_LOGS_ENABLED = false;
          *      0x0200–0x02FF   karta ceny
          *      0x0300–0x03FF   ustawienia wspólne dla wszystkich kart
          *
-         * ZASADA, KTÓREJ NIE WOLNO ZŁAMAĆ: numer raz wydany nie wraca do obiegu.
-         * Ustawienie, które znika ze skryptu, znika też z tego rejestru — ale
-         * jego numer zostaje spalony na zawsze, bo u kogoś w kieszeni leży kod,
-         * w którym ten numer coś znaczy.
+         * Numer raz wydany nie wraca do obiegu. Ustawienie usunięte ze skryptu
+         * znika z rejestru, ale jego numer zostaje spalony (RETIRED_IDS), bo
+         * u kogoś leży kod, w którym ten numer coś znaczy.
          *
          * `root` mówi, do której gałęzi stanu trafia wartość: 'local' to
          * ustawienia tej karty, 'user' — wspólne dla wszystkich.
@@ -6910,10 +6670,10 @@ const SCRIPT_LOGS_ENABLED = false;
             { id: 0x0007, root: 'local', path: 'pageOverlayOpacity', type: 'u8', min: 0, max: 100 },
             { id: 0x0008, root: 'local', path: 'pageIndicatorTextVisible', type: 'bool' },
 
-            // --- linie 1–7 ---
+            // --- linie 1–8 ---
             ...['line1_currentTab', 'line2_globalSummary', 'line3_shiftInfo', 'line4_lunchInfo',
                 'line5_realTimeClock', 'line6_valueSum', 'line7_compact',
-                // 1.3.0 — linia 8 dostaje blok 0x0170, kolejny wolny po linii 7.
+                // Linia 8 — blok 0x0170, kolejny po linii 7.
                 'line8_taskInfo'].flatMap((key, i) => {
                 const base = 0x0100 + i * 0x10;
                 return [
@@ -6929,14 +6689,13 @@ const SCRIPT_LOGS_ENABLED = false;
             { id: 0x0115, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.CRET', type: 'color' },
             { id: 0x0116, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.REFURB', type: 'color' },
             { id: 0x0117, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.WHD', type: 'color' },
-            // 1.3.2 — czwarty, ręczny dział. Numery kolejne i nigdy wcześniej
-            // nie wydane, więc stare kody nie zmieniają znaczenia.
+            // Dział ręczny OTHER — numery dotąd niewydane, więc starsze kody
+            // nie zmieniają znaczenia.
             { id: 0x0118, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.OTHER', type: 'color' },
 
             // --- karta ceny ---
-            { id: 0x0200, root: 'local', path: 'priceCard.moduleEnabled', type: 'bool' },
+            // 0x0200 i 0x0202 są wycofane — patrz RETIRED_IDS.
             { id: 0x0201, root: 'local', path: 'priceCard.visible', type: 'bool' },
-            { id: 0x0202, root: 'local', path: 'priceCard.source', type: 'enum', list: 'source' },
             { id: 0x0203, root: 'local', path: 'priceCard.logValues', type: 'bool' },
             { id: 0x0204, root: 'local', path: 'priceCard.marketFallback', type: 'bool' },
             { id: 0x0205, root: 'local', path: 'priceCard.showPrice', type: 'bool' },
@@ -6968,6 +6727,7 @@ const SCRIPT_LOGS_ENABLED = false;
             { id: 0x0309, root: 'user', path: 'globalStatsContributionKnown.OTHER', type: 'bool' },
             { id: 0x0307, root: 'user', path: 'keyboardShortcuts.INCREMENT', type: 'text' },
             { id: 0x0308, root: 'user', path: 'keyboardShortcuts.DECREMENT', type: 'text' },
+            { id: 0x030a, root: 'user', path: 'displayCurrency', type: 'enum', list: 'displayCurrency' },
         ],
 
         // ---------------- pomocnicze ----------------
@@ -7093,7 +6853,8 @@ const SCRIPT_LOGS_ENABLED = false;
         /**
          * Rozbiera kod na łatkę. NIE dotyka stanu — to robi apply().
          *
-         * @returns {{ok: boolean, error?: string, patch?: object, stats?: object}}
+         * @returns {{ok: boolean, error?: string, patch?: object,
+         *   stats?: {applied: number, unknown: number, invalid: number, retired: number}}}
          *   `stats.unknown` to rekordy o nieznanym numerze: kod z nowszego
          *   wydania wczyta się w starszym skrypcie, tracąc tylko to, czego ten
          *   skrypt i tak nie umie ustawić.
@@ -7117,7 +6878,7 @@ const SCRIPT_LOGS_ENABLED = false;
 
             const byId = new Map(this.REGISTRY.map(e => [e.id, e]));
             const patch = { local: {}, user: {} };
-            const stats = { applied: 0, unknown: 0, invalid: 0 };
+            const stats = { applied: 0, unknown: 0, invalid: 0, retired: 0 };
             let i = 1;
             while (i < bytes.length - 1) {
                 if (i + 3 > bytes.length - 1) { stats.invalid++; break; }
@@ -7128,6 +6889,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 const value = bytes.slice(from, from + len);
                 i = from + len;
 
+                if (this.RETIRED_IDS.includes(id)) { stats.retired++; continue; }
                 const entry = byId.get(id);
                 if (!entry) { stats.unknown++; continue; }
                 const parsed = this._fromBytes(entry, value);
@@ -7160,12 +6922,13 @@ const SCRIPT_LOGS_ENABLED = false;
                     if (this._set(this._root(root), path, value)) written++;
                 }
             }
-            StorageManager.saveState();
+            Persistence.saveState();
             Utils.log(`[KOD] wczytano ustawień: ${written}`);
             return {
                 'kod przyjęty': true,
                 'ustawień nałożonych': written,
                 'rekordów nieznanych (nowszy skrypt je zrozumie)': res.stats.unknown,
+                'rekordów wycofanych (sieć włącza się tylko w panelu)': res.stats.retired,
                 'rekordów odrzuconych': res.stats.invalid,
             };
         },
@@ -7208,85 +6971,78 @@ const SCRIPT_LOGS_ENABLED = false;
          * tutaj nie wywołuje — stąd wyłączona reguła lintera, która widzi samo
          * słowo `javascript:` w ciągu znaków. Test artefaktu pilnuje, że jest to
          * jedyne miejsce w całym pliku ze słowem `eval`.
+         *
+         * @returns {string|null} zakładka albo null, gdy w tej kompilacji nie
+         *   ma adresu wydania (CONFIG.RELEASE_URL).
          */
         link() {
-            // Kolejność w tym ciągu jest całym mechanizmem: najpierw kod trafia
-            // do okna, potem rusza pobieranie pliku. Skrypt zastaje go gotowego
-            // i nakłada sam, w środku uruchomienia — bez mrugnięcia domyślnym
-            // wyglądem i bez zgadywania, czy `SH` zdążyło już powstać.
+            // Bez adresu wydania zakładka nie miałaby czego pobrać — null
+            // zamiast tekstu, który po kliknięciu kończy się błędem.
+            if (!CONFIG.RELEASE_URL) return null;
+            // Kolejność jest mechanizmem: najpierw kod trafia do okna, potem
+            // rusza pobieranie pliku, który zastaje go gotowego (BOOT_VAR).
+            // `r.ok` nie puszcza strony błędu 404/503 do wykonania, a `catch`
+            // pokazuje przyczynę zamiast milczeć po kliknięciu.
             // eslint-disable-next-line no-script-url -- tekst zakładki, patrz wyżej
-            return "javascript:(async()=>{window['" + this.BOOT_GLOBAL + "']='" + this.encode()
+            return "javascript:(async()=>{try{window['" + this.BOOT_GLOBAL + "']='" + this.encode()
                 + "';const r=await fetch('" + CONFIG.RELEASE_URL
-                + "',{cache:'no-store'});eval(await r.text());})();void 0;";
+                + "',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);eval(await r.text())}"
+                + "catch(e){alert('StatsHelper nie wystartował: '+e.message)}})();void 0;";
         },
     };
 
     // ─── src/24-tasks.js ───
     // ==========================================
-    // 11. MENEDŻER ZADAŃ (1.3.0)
+    // 11. MENEDŻER ZADAŃ
     // ==========================================
     /**
      * ZADANIA (TASKI): OSOBNY ZEGAR DLA KAŻDEGO PROCESU PRACY.
      *
      * =====================================================================
-     * PROBLEM, KTÓRY TO ROZWIĄZUJE
+     * PO CO
      * =====================================================================
-     * Tempo liczyło się od POCZĄTKU ZMIANY — godziny wpisanej na stałe (6:30
-     * albo 18:30). Kto przyszedł do procesu trzy godziny później i zrobił trzy
-     * paczki w sześć minut, widział „1 paczka na godzinę” zamiast „30 na
-     * godzinę”. Liczba była policzona poprawnie, a jej znaczenie fałszywe —
-     * i to jest gorsze niż brak liczby, bo w liczbę się wierzy.
+     * Tempo zmiany liczy się od jej początku (06:30 albo 18:30). Kto przyszedł
+     * do procesu trzy godziny później i zrobił trzy paczki w sześć minut,
+     * widziałby „1 na godzinę” zamiast „30 na godzinę” — liczba poprawna,
+     * znaczenie fałszywe.
      *
-     * Zadanie ma własny zegar. Tempo zadania to jego paczki przez jego czas,
-     * więc opóźniony start, przerwa na rozmowę z kierownikiem i przejście
-     * z procesu o normie 30/h do procesu o normie 100/h przestają się mieszać
-     * w jedną nieczytelną średnią.
+     * Zadanie ma własny zegar: tempo zadania to jego paczki przez jego czas.
+     * Opóźniony start, przerwa i przejście między procesami o różnych normach
+     * nie mieszają się w jedną średnią.
      *
      * =====================================================================
      * WZNOWIENIE ZAMIAST DRUGIEGO ZADANIA O TEJ SAMEJ NAZWIE
      * =====================================================================
-     * Zadanie ma LISTĘ ODCINKÓW, a nie jeden początek i koniec. Kto pracował
-     * trzy godziny w procesie zwykłym, poszedł na pięć godzin do szybkiego
-     * i wrócił do zwykłego, WZNAWIA to pierwsze zadanie — z tym samym
-     * identyfikatorem. Dzięki temu w podsumowaniu zmiany stoi jedno zadanie
-     * z sensownym tempem, a nie trzy wpisy 30 / 100 / 30, z których nic nie
-     * widać. Odcinek jest też miejscem na pauzę: zamknięty odcinek zatrzymuje
-     * zegar, a pierwsza paczka po pauzie otwiera nowy — bo skoro paczki idą,
-     * to przerwa się skończyła, niezależnie od tego, czy ktoś o tym pamiętał.
+     * Zadanie ma listę odcinków, a nie jeden początek i koniec. Powrót do
+     * procesu wznawia to samo zadanie, więc podsumowanie zmiany ma jedno
+     * zadanie z sensownym tempem zamiast wpisów 30 / 100 / 30. Zamknięty
+     * odcinek to pauza; pierwsza paczka po pauzie otwiera nowy odcinek — skoro
+     * paczki idą, przerwa się skończyła.
      *
      * =====================================================================
      * RĘCZNIE WPISANE PACZKI NIE WCHODZĄ DO MIANOWNIKA PROCENTU
      * =====================================================================
-     * Po awarii maszyny (a komputer stoi na sesji tymczasowej, więc pamięć
-     * przeglądarki znika w całości) człowiek pamięta swoje tempo albo liczbę
-     * paczek, ale nie pamięta, ile z nich poszło na sprzedaż. Wpisana liczba
-     * trafia więc do paczek ORAZ do licznika „poza mianownikiem” — tego samego,
-     * którym od 1.3.0 liczą się audyty. Skutek: procent sprzedaży pokazuje
-     * wyłącznie to, co skrypt naprawdę zobaczył, czyli liczy się od przedmiotu,
-     * przy którym człowiek wrócił do pracy. Gdyby wpisane paczki wchodziły do
-     * mianownika, procent po każdej awarii spadałby do kilku procent i nie
-     * znaczyłby już nic.
+     * Po awarii maszyny (sesja tymczasowa — pamięć przeglądarki znika)
+     * człowiek pamięta tempo albo liczbę paczek, ale nie to, ile poszło na
+     * sprzedaż. Wpisana liczba trafia do paczek oraz do licznika „poza
+     * mianownikiem” (jak audyty), więc procent sprzedaży opisuje tylko to, co
+     * skrypt naprawdę zobaczył, a nie spada po awarii do kilku procent.
      *
      * =====================================================================
      * NIENARUSZALNA RÓWNOŚĆ
      * =====================================================================
-     * Suma paczek wszystkich zadań danej karty ZAWSZE równa się licznikowi tej
-     * karty. Liczniki zmiany zostają jedynym źródłem prawdy dla linii 1, 2 i 7,
-     * a zadania są ich rozbiciem w czasie. Obie strony ruszają się w jednym
-     * miejscu — w metodach niżej — i pilnuje tego osobne sprawdzenie w testach.
+     * Suma paczek wszystkich zadań karty zawsze równa się licznikowi tej
+     * karty. Liczniki zmiany są źródłem prawdy dla linii 1, 2 i 7, a zadania
+     * ich rozbiciem w czasie. Obie strony ruszają się w metodach poniżej;
+     * pilnują tego testy.
      *
      * =====================================================================
      * ZAPIS
      * =====================================================================
-     *   `tasks`                      — wspólny dla wszystkich kart: lista zadań
-     *                                  i identyfikator aktywnego. Zadanie jest
-     *                                  własnością CZŁOWIEKA, nie karty: kto
-     *                                  przechodzi do innego procesu, przechodzi
-     *                                  w nim z wszystkimi otwartymi kartami.
-     *   `taskcnt_<id>_<karta>`       — liczniki, OSOBNY KLUCZ NA KARTĘ. Tak samo
-     *                                  jak liczniki zmiany i z tego samego
-     *                                  powodu: dwie karty piszące jeden klucz
-     *                                  zamazywałyby sobie liczby nawzajem.
+     *   `tasks`                — wspólny dla kart: lista zadań i aktywne.
+     *                            Zadanie należy do człowieka, nie do karty.
+     *   `taskcnt_<id>_<karta>` — liczniki, klucz na kartę: dwie karty
+     *                            piszące jeden klucz zamazywałyby sobie liczby.
      */
     const TaskManager = {
         // ---------------- dostęp ----------------
@@ -7302,10 +7058,8 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Zadanie domyślne powstaje przy pierwszym uruchomieniu i zaczyna się
-         * razem ze zmianą — bo dopóki człowiek nie powie inaczej, cała zmiana
-         * jest jednym procesem. To zachowanie sprzed 1.3.0 i po włączeniu
-         * skryptu nic się nie zmienia: jedno zadanie, tempo liczone od początku
-         * zmiany.
+         * razem ze zmianą — dopóki człowiek nie powie inaczej, cała zmiana
+         * jest jednym procesem, a tempo liczy się od jej początku.
          */
         init() {
             if (store.tasks.length) return this.active();
@@ -7315,14 +7069,81 @@ const SCRIPT_LOGS_ENABLED = false;
 
         // ---------------- zmiany listy ----------------
         /**
-         * Zadania siedzą w zwykłej tablicy, a tablice NIE są reaktywne (patrz
-         * createReactive: Utils.isObject odrzuca tablice). Dlatego każda zmiana
-         * podmienia całą tablicę — inaczej linia 8 i panel nie dowiedziałyby się
-         * o niczym, dopóki czegoś innego nie ruszy magistrali.
+         * Tablice nie są reaktywne (createReactive pomija tablice), więc każda
+         * zmiana podmienia całą listę — inaczej linia 8 i panel nie
+         * dowiedziałyby się o niej.
          */
         _commit(list) {
+            this._stamp(list);
             store.tasks = list.slice();
             this.save();
+        },
+
+        /**
+         * ZADANIA W DWÓCH KARTACH NARAZ.
+         *
+         * Lista leży w jednym kluczu na wszystkie karty. Zapis całej listy
+         * z pamięci karty wymazywałby zadanie założone przed chwilą w sąsiedniej
+         * karcie (a jego paczki zostałyby w liczniku). Dlatego zadanie niesie
+         * `updated`, usunięte zostawia nagrobek w `_removed`, a przełączenie
+         * aktywnego — `_activeAt`. Zapis scala z magazynem: wygrywa nowsza
+         * wersja zadania, nagrobek wygrywa z wersją sprzed usunięcia, aktywne
+         * jest ostatnio przełączone.
+         */
+        _sig: {},
+        _removed: {},
+        _activeAt: 0,
+        _lastActive: null,
+        _signature: (t) => JSON.stringify([t.name, t.segments]),
+        _stamp(list) {
+            const now = Date.now();
+            const alive = new Set();
+            for (const t of list) {
+                alive.add(t.id);
+                const sig = this._signature(t);
+                if (this._sig[t.id] !== sig) { t.updated = now; this._sig[t.id] = sig; }
+            }
+            for (const id of Object.keys(this._sig)) {
+                if (!alive.has(id)) { this._removed[id] = now; delete this._sig[id]; }
+            }
+            if (store.activeTaskId !== this._lastActive) { this._activeAt = now; this._lastActive = store.activeTaskId; }
+        },
+
+        /** Stan zadań tej karty scalony z tym, co leży w magazynie. */
+        merge(stored) {
+            const shiftStart = store.sessionConfig.shiftCalculatedStartTime || null;
+            const mine = { shiftStart, activeId: store.activeTaskId, activeAt: this._activeAt,
+                           list: store.tasks, removed: this._removed };
+            if (!stored || !Array.isArray(stored.list)) return mine;
+            // Inna zmiana w magazynie: nie scala się dwóch zmian — wygrywa nowsza.
+            if (stored.shiftStart && shiftStart && stored.shiftStart !== shiftStart) {
+                return stored.shiftStart > shiftStart ? stored : mine;
+            }
+            const removed = { ...(stored.removed || {}) };
+            for (const [id, ts] of Object.entries(mine.removed)) removed[id] = Math.max(removed[id] || 0, ts);
+            // Kolejność z magazynu, bo to kolejność zakładania we wszystkich
+            // kartach; nowe zadania tej karty na koniec.
+            const byId = new Map(stored.list.map(t => [t.id, t]));
+            for (const t of mine.list) {
+                const other = byId.get(t.id);
+                if (!other || (t.updated || 0) >= (other.updated || 0)) byId.set(t.id, t);
+            }
+            const list = [...byId.values()].filter(t => !(removed[t.id] >= (t.updated || 0)));
+            const ours = (mine.activeAt || 0) >= (stored.activeAt || 0);
+            let activeId = ours ? mine.activeId : stored.activeId;
+            if (!list.some(t => t.id === activeId)) activeId = list.length ? list[list.length - 1].id : null;
+            return { shiftStart, activeId, activeAt: Math.max(mine.activeAt || 0, stored.activeAt || 0), list, removed };
+        },
+
+        /** Przyjęcie scalonego stanu do pamięci — bez znakowania go jako „naszej zmiany”. */
+        adopt(state) {
+            store.tasks = state.list;
+            store.activeTaskId = state.activeId;
+            this._removed = { ...(state.removed || {}) };
+            this._activeAt = state.activeAt || 0;
+            this._lastActive = state.activeId;
+            this._sig = {};
+            for (const t of state.list) this._sig[t.id] = this._signature(t);
         },
 
         /** Nazwa bez białych brzegów, przycięta do granicy z konfiguracji. */
@@ -7333,12 +7154,8 @@ const SCRIPT_LOGS_ENABLED = false;
 
         /**
          * Początek odcinka: nie w przyszłości i nie wcześniej niż początek
-         * odcinka, który właśnie zamykamy.
-         *
-         * Drugie ograniczenie nie jest ozdobne: bez niego przestawienie startu
-         * „o dwie minuty wstecz” tuż po przełączeniu dałoby poprzedniemu
-         * zadaniu odcinek o ujemnej długości, a więc tempo z dzieleniem przez
-         * liczbę ujemną.
+         * odcinka, który właśnie zamykamy — inaczej „dwie minuty wstecz” tuż po
+         * przełączeniu dałoby poprzedniemu zadaniu odcinek o ujemnej długości.
          */
         clampStart(ms) {
             const now = Date.now();
@@ -7431,36 +7248,26 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         /**
-         * POCZĄTEK CAŁEGO ZADANIA — „zacząłem dwie minuty temu”, „zacząłem razem
-         * ze zmianą”.
+         * POCZĄTEK CAŁEGO ZADANIA — „zacząłem dwie minuty temu”, „zacząłem
+         * razem ze zmianą”.
          *
-         * ===================================================================
-         * DLACZEGO CAŁEGO, A NIE OSTATNIEGO ODCINKA (poprawka z 1.3.2)
-         * ===================================================================
-         * Pierwsza wersja przestawiała początek OSTATNIEGO odcinka, a czas
-         * zadania jest sumą WSZYSTKICH. Wystarczyło raz zatrzymać zegar
-         * i kliknąć „początek zmiany”, żeby ostatni odcinek rozciągnął się na
-         * całą zmianę OBOK odcinków wcześniejszych. Każde powtórzenie dokładało
-         * kolejne pięć godzin: po niespełna pięciu godzinach pracy dało się
-         * naklikać czternaście.
+         * Przestawia się początek zadania, a nie ostatniego odcinka: czas
+         * zadania to suma odcinków, więc rozciąganie ostatniego dokładałoby
+         * godziny obok wcześniejszych przy każdym kliknięciu.
+         *   - wstecz: pierwszy odcinek rozciąga się do nowego początku;
+         *   - w przód: wszystko przed nowym początkiem jest obcinane — odcinki
+         *     zamknięte wcześniej znikają, a ten, w którym wypada początek,
+         *     zaczyna się od niego.
          *
-         * Człowiek ma w głowie jedno zdanie — „to zadanie zaczęło się o X” —
-         * więc kontrolka musi robić dokładnie to:
-         *
-         *   - przesunięcie WSTECZ rozciąga pierwszy odcinek do nowego początku;
-         *   - przesunięcie W PRZÓD obcina wszystko, co leży przed nim: odcinki
-         *     zamknięte wcześniej znikają, a odcinek, w środku którego wypada
-         *     nowy początek, zaczyna się od niego.
-         *
-         * Przerwy zostają nietknięte, a przepracowany czas NIGDY nie przekracza
-         * odstępu od początku zadania do teraz. To jest niezmiennik, który
-         * pilnuje testów — gdyby istniał od początku, tamten błąd nie wyszedłby
-         * dopiero na hali.
+         * Przerwy zostają. Niezmiennik (testy): przepracowany czas nigdy nie
+         * przekracza odstępu od początku zadania do teraz.
          */
         setStart(id, ms) {
             const task = this.byId(id);
-            if (!task) return;
-            const wanted = Math.min(Math.max(0, Number(ms) || 0), Date.now());
+            const asked = Number(ms);
+            // Tekst, zero i liczby ujemne nie są chwilą (0 to 1 stycznia 1970).
+            if (!task || !Number.isFinite(asked) || asked <= 0) return;
+            const wanted = Math.min(Math.max(asked, this.previousEnd(task)), Date.now());
             const first = task.segments[0];
             if (wanted <= first.from) {
                 first.from = wanted;
@@ -7468,28 +7275,57 @@ const SCRIPT_LOGS_ENABLED = false;
                 const kept = task.segments
                     .filter(seg => seg.to === null || seg.to > wanted)
                     .map(seg => ({ from: Math.max(seg.from, wanted), to: seg.to }));
-                task.segments = kept.length ? kept : [{ from: wanted, to: null }];
+                // Zadanie zatrzymane zostaje zatrzymane — przestawienie
+                // początku nie puszcza zegara.
+                const running = this.isRunning(task);
+                task.segments = kept.length ? kept : [{ from: wanted, to: running ? null : wanted }];
             }
             this._commit(store.tasks);
+        },
+
+        /**
+         * Koniec ostatniego odcinka innych zadań przed początkiem tego zadania —
+         * poniżej tej granicy początku cofnąć nie wolno. Inaczej „początek
+         * zmiany” na drugim zadaniu nałożyłby je na pierwsze: te same godziny
+         * liczone dwa razy, a obiad odjęty podwójnie.
+         */
+        previousEnd(task) {
+            const own = task.segments[0].from;
+            let end = 0;
+            for (const other of store.tasks) {
+                if (other.id === task.id) continue;
+                for (const seg of other.segments) {
+                    if (seg.to !== null && seg.to <= own && seg.to > end) end = seg.to;
+                }
+            }
+            return end;
         },
 
         remove(id) {
             const task = this.byId(id);
             if (!task || store.tasks.length <= 1) return false;
             const list = store.tasks.filter(t => t.id !== id);
-            // Liczniki znikają razem z zadaniem, inaczej suma zadań przestałaby
-            // zgadzać się z licznikiem zmiany. Licznik zmiany schodzi o tyle samo.
-            const counters = store.taskCounters[id] || {};
-            for (const [tabKey, c] of Object.entries(counters)) {
-                store.tabCounters[tabKey] = Math.max(0, (store.tabCounters[tabKey] || 0) - (c.done || 0));
-                store.tabSold[tabKey] = Math.max(0, (store.tabSold[tabKey] || 0) - (c.sold || 0));
-                store.tabNeutral[tabKey] = Math.max(0, (store.tabNeutral[tabKey] || 0) - (c.neutral || 0));
-                StorageManager.saveCounter(tabKey, store.tabCounters[tabKey]);
-                StorageManager.saveSold(tabKey, store.tabSold[tabKey]);
-                StorageManager.saveNeutral(tabKey, store.tabNeutral[tabKey]);
-                StorageManager.removeTaskCounter(id, tabKey);
+            // Liczniki znikają razem z zadaniem, a licznik zmiany schodzi
+            // o tyle samo — suma zadań musi się zgadzać z licznikiem karty.
+            // Liczniki czyta się z magazynu, nie z pamięci: sąsiednia karta
+            // mogła dopisać paczki, o których ta jeszcze nie wie.
+            const tabs = new Set([...Object.keys(store.taskCounters[id] || {}), ...Persistence.storedTaskTabs(id)]);
+            for (const tabKey of tabs) {
+                const c = Persistence.freshTaskCounter(id, tabKey, this.counters(id, tabKey));
+                for (const [prefix, memory, value] of [
+                    [CONFIG.STORAGE_PREFIX_TAB_COUNTER, store.tabCounters, c.done],
+                    [CONFIG.STORAGE_PREFIX_TAB_SOLD, store.tabSold, c.sold],
+                    [CONFIG.STORAGE_PREFIX_TAB_NEUTRAL, store.tabNeutral, c.neutral],
+                ]) {
+                    const key = Persistence.getKey(prefix + tabKey);
+                    memory[tabKey] = Math.max(0, Persistence.freshCount(key, memory[tabKey] || 0) - value);
+                    Persistence.write(key, String(memory[tabKey]));
+                }
+                Persistence.removeTaskCounter(id, tabKey);
             }
-            delete store.taskCounters[id];
+            const counters = { ...store.taskCounters };
+            delete counters[id];
+            store.taskCounters = counters;
             if (store.activeTaskId === id) store.activeTaskId = list[list.length - 1].id;
             this._commit(list);
             return true;
@@ -7507,21 +7343,45 @@ const SCRIPT_LOGS_ENABLED = false;
         workedMs(task, nowMs) {
             if (!task) return 0;
             const now = Number(nowMs) || Date.now();
+            const floor = this.countedFrom();
             let total = 0;
             for (const seg of task.segments) {
+                const from = Math.max(seg.from, floor);
                 const to = seg.to === null ? now : seg.to;
-                if (to <= seg.from) continue;
-                total += (to - seg.from) - ShiftManager.lunchOverlapMs(seg.from, to);
+                if (to <= from) continue;
+                total += (to - from) - ShiftManager.lunchOverlapMs(from, to);
             }
             return Math.max(0, total);
         },
 
-        /** Początek pierwszego odcinka i koniec ostatniego — do podsumowania. */
+        /**
+         * Chwila, od której czas zadań się liczy: początek zmiany.
+         *
+         * Sesja startuje o 06:20 albo 18:20, zmiana o 06:30 albo 18:30 — te
+         * dziesięć minut nie jest pracą, a skrypt uruchamia się właśnie wtedy.
+         * Bez przycięcia linia 8 liczyłaby od 06:20, a linia 1 od 06:30.
+         *
+         * Przycięcie jest przy odczycie, bo odcinek sprzed zmiany powstaje
+         * kilkoma drogami (zadanie domyślne, nowe zadanie o 06:25, paczka
+         * w pauzie, skrypt wklejony w martwej strefie). Bez rozpoznanej zmiany
+         * nie przycina niczego.
+         */
+        countedFrom() {
+            const start = store.sessionConfig.shiftCalculatedStartTime;
+            return typeof start === 'number' ? start : -Infinity;
+        },
+
+        /**
+         * Początek pierwszego odcinka i koniec ostatniego — do podsumowania.
+         * Początek widać w panelu, więc przycina się tak samo jak czas: inaczej
+         * panel pokazywałby 06:20, a tempo liczyłoby się od 06:30.
+         */
         span(task) {
             if (!task || !task.segments.length) return { from: null, to: null };
             const first = task.segments[0];
             const last = task.segments[task.segments.length - 1];
-            return { from: first.from, to: last.to };
+            const from = Math.max(first.from, this.countedFrom());
+            return { from, to: last.to === null ? null : Math.max(last.to, from) };
         },
 
         // ---------------- liczniki ----------------
@@ -7553,7 +7413,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 neutral: Math.max(0, next.neutral | 0),
             };
             store.taskCounters = { ...store.taskCounters, [id]: byTab };
-            StorageManager.saveTaskCounter(id, tabKey, byTab[tabKey]);
+            Persistence.saveTaskCounter(id, tabKey, byTab[tabKey]);
         },
 
         /**
@@ -7563,23 +7423,26 @@ const SCRIPT_LOGS_ENABLED = false;
          */
         addItem(tabKey) {
             const task = this.ensureRunning();
-            if (!task) return;
-            const c = this.counters(task.id, tabKey);
-            this._write(task.id, tabKey, { ...c, done: c.done + 1 });
+            if (task) this._bump(task, tabKey, 'done');
         },
 
         addSold(tabKey) {
             const task = this.active();
-            if (!task) return;
-            const c = this.counters(task.id, tabKey);
-            this._write(task.id, tabKey, { ...c, sold: c.sold + 1 });
+            if (task) this._bump(task, tabKey, 'sold');
         },
 
         addNeutral(tabKey) {
             const task = this.active();
-            if (!task) return;
-            const c = this.counters(task.id, tabKey);
-            this._write(task.id, tabKey, { ...c, neutral: c.neutral + 1 });
+            if (task) this._bump(task, tabKey, 'neutral');
+        },
+
+        /**
+         * +1 do jednego pola licznika zadania — od wartości w magazynie, bo dwie
+         * karty tego samego działu dzielą klucz (Persistence.freshCount).
+         */
+        _bump(task, tabKey, field) {
+            const c = Persistence.freshTaskCounter(task.id, tabKey, this.counters(task.id, tabKey));
+            this._write(task.id, tabKey, { ...c, [field]: c[field] + 1 });
         },
 
         /**
@@ -7591,18 +7454,41 @@ const SCRIPT_LOGS_ENABLED = false;
          * sprzedaży — ani w dół (gdyby liczyła się jak niesprzedaż), ani w górę.
          */
         adjustManual(tabKey, delta) {
+            // Zero to nie poprawka: −1 przy pustym liczniku nie może zdjąć pauzy.
+            if (!delta) return;
+            // Odjęcie idzie drogą wpisania liczby wprost — od najnowszego
+            // zadania wstecz, bo paczki mogą leżeć w poprzednim zadaniu.
+            if (delta < 0) {
+                this.applyManualTotal(tabKey, this.shiftTotal(tabKey, 'done') + delta);
+                return;
+            }
             // Przez ensureRunning, a nie przez active(): ręczna paczka też jest
             // paczką, więc kończy pauzę tak samo, jak zaliczona automatycznie.
             const task = this.ensureRunning();
             if (!task) return;
             const c = this.counters(task.id, tabKey);
-            const done = Math.max(0, c.done + delta);
-            const used = done - c.done;          // ile naprawdę weszło po przycięciu do zera
-            this._write(task.id, tabKey, {
-                done,
-                sold: Math.min(c.sold, done),
-                neutral: Math.max(0, Math.min(done, c.neutral + used)),
-            });
+            this._write(task.id, tabKey, { ...c, done: c.done + delta, neutral: c.neutral + delta });
+        },
+
+        /**
+         * Liczniki po zmniejszeniu paczek do `done` — bez przesunięcia procentu.
+         *
+         * Zdejmowana paczka ma nieznany kierunek, więc procent (sprzedane przez
+         * paczki z mianownika) nie ma prawa od tego drgnąć. Kolejność:
+         *   1. najpierw paczki SPOZA mianownika (wpisane ręcznie, audyty) —
+         *      procentu nie dotykają wcale, więc +1 i −1 to para odwracalna;
+         *   2. potem paczki z mianownika, a sprzedane maleją proporcjonalnie.
+         *
+         * Paczki są całkowite, więc procent zostaje z dokładnością do jednej
+         * paczki (np. −1 przy 10/5 daje dalej 50%, a nie 55%).
+         */
+        _shrink(c, done) {
+            const drop = c.done - done;
+            const neutral = Math.max(0, c.neutral - drop);
+            const rated = c.done - c.neutral;
+            const ratedLeft = rated - (drop - (c.neutral - neutral));
+            const sold = rated > 0 ? Math.round(c.sold * ratedLeft / rated) : 0;
+            return { done, sold: Math.min(sold, ratedLeft), neutral };
         },
 
         /**
@@ -7627,12 +7513,7 @@ const SCRIPT_LOGS_ENABLED = false;
                 const c = this.counters(task.id, tabKey);
                 if (!c.done) continue;
                 const take = Math.min(c.done, -diff);
-                const done = c.done - take;
-                this._write(task.id, tabKey, {
-                    done,
-                    sold: Math.min(c.sold, done),
-                    neutral: Math.min(c.neutral, done),
-                });
+                this._write(task.id, tabKey, this._shrink(c, c.done - take));
                 diff += take;
             }
         },
@@ -7689,23 +7570,46 @@ const SCRIPT_LOGS_ENABLED = false;
             const wanted = Math.max(0, Number(target) || 0);
             const delta = wanted - this.totals(task).done;
             if (!delta) return;
+            this._applyDelta(task, tabKey, delta);
+        },
+
+        /**
+         * Zmiana paczek zadania na jednej karcie — wspólna dla pola paczek
+         * i pola tempa. W górę: paczki poza mianownik, bo ich kierunku nikt nie
+         * zna. W dół: przez _shrink, żeby procent nie drgnął.
+         */
+        _applyDelta(task, tabKey, delta) {
             const c = this.counters(task.id, tabKey);
-            const done = Math.max(0, c.done + delta);
-            const used = done - c.done;
-            this._write(task.id, tabKey, {
-                done,
-                sold: Math.min(c.sold, done),
-                neutral: Math.max(0, Math.min(done, c.neutral + used)),
-            });
+            if (delta >= 0) {
+                this._write(task.id, tabKey, { ...c, done: c.done + delta, neutral: c.neutral + delta });
+            } else {
+                this._write(task.id, tabKey, this._shrink(c, Math.max(0, c.done + delta)));
+            }
+        },
+
+        /**
+         * Liczniki zmiany karty (paczki, sprzedane, poza mianownikiem) dostają
+         * sumy z zadań. Jedno miejsce dla panelu i skrótu klawiszowego, żeby
+         * linia 1 nie rozjechała się z zadaniami.
+         */
+        syncShift(tabKey) {
+            store.tabCounters[tabKey] = this.shiftTotal(tabKey, 'done');
+            store.tabSold[tabKey] = this.shiftTotal(tabKey, 'sold');
+            store.tabNeutral[tabKey] = this.shiftTotal(tabKey, 'neutral');
+            Persistence.saveCounter(tabKey, store.tabCounters[tabKey]);
+            Persistence.saveSold(tabKey, store.tabSold[tabKey]);
+            Persistence.saveNeutral(tabKey, store.tabNeutral[tabKey]);
         },
 
         /**
          * Godzina wpisana ręcznie („18:32”) na znacznik czasu.
          *
-         * Godzina PÓŹNIEJSZA NIŻ TERAZ to wczoraj, a nie pomyłka: na nocnej
-         * zmianie o 00:40 wpisane „23:30” znaczy pół godziny temu. Bez tego
-         * clampStart przyciąłby wartość do „teraz” i człowiek dostałby zadanie
-         * o zerowej długości zamiast komunikatu, że czegoś nie rozumiemy.
+         * Wynik to najbliższa taka godzina: dzisiejsza albo wczorajsza. Na
+         * nocnej zmianie o 00:40 wpisane „23:30” to pięćdziesiąt minut temu.
+         *   - „wczoraj” przez setDate(-1), nie odjęcie 24 h — doba zmiany czasu
+         *     ma 23 albo 25 godzin;
+         *   - wczoraj tylko wtedy, gdy jest bliżej niż dziś: „06:36” wpisane
+         *     o 06:35:30 to dziś, a setStart przytnie je do teraz.
          *
          * @returns {number|null} null, gdy tekst nie jest godziną.
          */
@@ -7715,11 +7619,14 @@ const SCRIPT_LOGS_ENABLED = false;
             const hours = parseInt(m[1], 10);
             const minutes = parseInt(m[2], 10);
             if (hours > 23 || minutes > 59) return null;
-            const d = new Date();
+            const now = Date.now();
+            const d = new Date(now);
             d.setHours(hours, minutes, 0, 0);
-            let ms = d.getTime();
-            if (ms > Date.now()) ms -= 24 * 3600000;
-            return ms;
+            const today = d.getTime();
+            if (today <= now) return today;
+            d.setDate(d.getDate() - 1);
+            const yesterday = d.getTime();
+            return today - now < now - yesterday ? today : yesterday;
         },
 
         /**
@@ -7738,22 +7645,13 @@ const SCRIPT_LOGS_ENABLED = false;
             if (!task) return null;
             const target = this.doneForRate(task, rate, nowMs);
             if (target === null) return null;
-            const current = this.totals(task).done;
-            const c = this.counters(task.id, tabKey);
-            const delta = target - current;
-            const done = Math.max(0, c.done + delta);
-            const used = done - c.done;
-            this._write(task.id, tabKey, {
-                done,
-                sold: Math.min(c.sold, done),
-                neutral: Math.max(0, Math.min(done, c.neutral + used)),
-            });
+            this._applyDelta(task, tabKey, target - this.totals(task).done);
             return this.totals(task).done;
         },
 
         // ---------------- zapis ----------------
         save() {
-            StorageManager.saveTasks();
+            Persistence.saveTasks();
         },
 
         /** Sprawozdanie do konsoli: SH.tasks() */
@@ -7843,7 +7741,7 @@ const SCRIPT_LOGS_ENABLED = false;
         }
 
         // 4. Utrwalenie stanu (gwarantuje zapis do localStorage i render)
-        StorageManager.saveState();
+        Persistence.saveState();
     };
 
 */
@@ -7876,7 +7774,7 @@ const SCRIPT_LOGS_ENABLED = false;
    2. KONSOLA (na próbę, do najbliższego przeładowania strony).
       Po uruchomieniu skryptu dostępny jest obiekt SH, np.:
           SH.store.localTabConfig.linesConfig.line7_compact.fontSize = 16;
-          SH.StorageManager.saveState();      // żeby zapisać na stałe
+          SH.Persistence.saveState();      // żeby zapisać na stałe
           SH.priceOn();                       // włączyć moduł cen (sieć!)
           SH.priceOff();                      // wyłączyć moduł cen
           SH.priceStats();                    // ile zapytań poszło
@@ -7931,18 +7829,23 @@ const SCRIPT_LOGS_ENABLED = false;
    line4_lunchInfo       wybrana przerwa                 domyślnie: OFF, #808080, 60%, 14px
    line5_realTimeClock   zegar                           domyślnie: OFF, #808080, 60%, 14px
    line6_valueSum        bilans pieniężny zmiany         domyślnie: OFF, #7CFFA8, 85%, 14px
-   line7_compact         dwie liczby: wydajność i sztuki domyślnie: ON,  #808080, 50%, 13px
+   line7_compact         trzy liczby: tempo, sztuki, %   domyślnie: ON,  #808080, 50%, 13px
+   line8_taskInfo        bieżące zadanie                 domyślnie: OFF, #808080, 60%, 13px
 
    Linia 2 ma dodatkowo:
        multicolor    — true/false, kolorowanie działów osobnymi kolorami
-       customColors  — { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E' }
+       customColors  — { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
 
    Linia 6: picker koloru działa tylko na liczbę sztuk. Plus zawsze zielony,
    minus zawsze czerwony — po tym rozpoznaje się znak.
 
-   Linia 7: pokazuje dokładnie dwie liczby oddzielone spacją, np. „17.4 28”.
+   Linia 7: pokazuje dokładnie trzy liczby oddzielone spacją, np. „17.4 28 14%”.
    Pierwsza to paczki na godzinę (suma ze wszystkich wliczanych kart), druga to
-   liczba zrobionych sztuk. Nic więcej się tam nie da dodać bez zmiany kodu.
+   liczba zrobionych sztuk, trzecia — procent sprzedaży. Nic więcej się tam nie
+   da dodać bez zmiany kodu.
+
+   Linia 8: nazwa bieżącego zadania i jego własne liczby — paczki, tempo,
+   procent, przepracowany czas.
 
    -----------------------------------------------------------------------------
    OKNO STATYSTYK  (store.localTabConfig)
@@ -7966,13 +7869,13 @@ const SCRIPT_LOGS_ENABLED = false;
    logValues  = true          prowadzić dziennik wartości
    marketFallback = true      szukać ceny w innych sklepach, gdy w wybranym brak
    showPrice  = true          pokazywać aktualną cenę
-   showRrp    = true          pokazywać cenę katalogową / drugą serię
+   showRrp    = false         pokazywać cenę katalogową / drugą serię
    showGraph  = true          pokazywać obrazek wykresu (tylko przy source 'graph')
    graphMode  = 'legend'      'legend' (same ceny) | 'right' | 'full'
    width      = 280           170..900 px
-   fontSize   = 30            14..48 px
+   fontSize   = 13            11..48 px (suwak w panelu)
    bgColorHex = '#0a0e18'     tło karty
-   bgAlpha    = 88            0..100
+   bgAlpha    = 0             0..100
    position   = { left: '14px', top: '' }   puste top = przy dole ekranu
 
    -----------------------------------------------------------------------------
@@ -7982,7 +7885,10 @@ const SCRIPT_LOGS_ENABLED = false;
    marketplace = 'de'         'de' | 'co.uk' | 'com' | 'it' | 'fr' | 'es' | 'nl'
                               | 'ca' | 'se' | 'com.be' | 'pl'
                               (Keepa nie ma danych dla 'pl' — link zadziała, cena nie)
-   globalStatsContributionKnown = { CRET: true, REFURB: true, WHD: true }
+   displayCurrency = 'EUR'     'native' | 'EUR' | 'PLN' | 'GBP' | 'SEK' | 'USD' | 'CAD'
+                              'native' = karta w walucie sklepu, linia 6 w euro;
+                              sumy zawsze w euro, to tylko waluta pokazywania
+   globalStatsContributionKnown = { CRET: true, REFURB: true, WHD: true, OTHER: true }
                               które działy wliczają się do sumy w liniach 2 i 7
    keyboardShortcuts = { INCREMENT: 'None', DECREMENT: 'None' }
                               'None' | 'ShiftRight' | 'ControlRight' | 'AltRight'
@@ -7995,10 +7901,10 @@ const SCRIPT_LOGS_ENABLED = false;
    STAŁE W CONFIG (zmiana wymaga edycji pliku)
    -----------------------------------------------------------------------------
    SCRIPT_VERSION             podstawiany przy budowaniu z package.json
-   SCRIPT_ID_PREFIX = 'statsHelper_v1_0_0_'
+   SCRIPT_ID_PREFIX = 'statsHelper_v1_3_0_'
        Prefiks wszystkich kluczy w localStorage. Koduje SCHEMAT danych, a nie
-       numer wydania: 1.1.0 i 1.2.0 zostaną przy 'v1_0_0', dopóki układ
-       zapisywanych pól się nie zmieni. Zmiana prefiksu = start od zera
+       numer wydania: zostaje ten sam, dopóki układ zapisywanych pól się
+       nie zmieni. Zmiana prefiksu = start od zera
        (stare ustawienia i liczniki przestają być widoczne).
    DEBUG_MODE = false         bierze się z SCRIPT_LOGS_ENABLED z góry pliku;
                               tu jest wartość startowa, SH.logsOn() zmienia ją w locie
@@ -8013,7 +7919,8 @@ const SCRIPT_LOGS_ENABLED = false;
    AUTO_TRIGGER_REGEX                 co oznacza KONIEC przedmiotu (+1 do licznika)
    ROUTE_SELL_CODES / ROUTE_UNSELL_CODES   kody sortowania: sprzedaż / utylizacja
    PRICE_MIN_REQUEST_GAP_MS = 3000    minimalna przerwa między zapytaniami
-   PRICE_FALLBACK_MAX_TRIES = 5       ile sklepów zapasowych sprawdzać
+   PRICE_FALLBACK_MAX_TRIES = Infinity  ile sklepów zapasowych sprawdzać (wszystkie)
+   PRICE_FALLBACK_LAST = ['com', 'ca']  rynki spoza Europy — w przeglądzie na końcu
    FX_FALLBACK                        kursy wbudowane, używane bez sieci
    PRICE_KEEPA_API_KEY = ''           płatny klucz Keepa (opcjonalny)
 
@@ -8025,12 +7932,12 @@ const SCRIPT_LOGS_ENABLED = false;
    albo w konsoli, bez edycji pliku:
        SH.store.localTabConfig.linesConfig.line7_compact.fontSize = 18;
        SH.store.localTabConfig.linesConfig.line7_compact.alpha = 80;
-       SH.StorageManager.saveState();
+       SH.Persistence.saveState();
 
    PRZYKŁAD: „przenieść okno do prawego dolnego rogu”
        SH.store.localTabConfig.statsWindowPosition = { top: '', left: 'calc(100% - 200px)', bottom: '8px' };
        SH.StatsWindowRenderer.applyPosition();
-       SH.StorageManager.saveState();
+       SH.Persistence.saveState();
 
    PRZYKŁAD: „włączyć ceny na jedną zmianę i potem wyłączyć”
        SH.priceOn();     // pobiera kursy i zaczyna pytać o ceny
