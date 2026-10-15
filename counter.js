@@ -304,7 +304,7 @@ const SCRIPT_LOGS_ENABLED = false;
         // drugi przy podniesionej fladze daje +1. Teksty rosyjskie to napisy
         // samego T-REX. PROBLEM-SOLVE jest wyłączony, bo taki przedmiot wraca
         // do obsługi i zostałby policzony dwa razy.
-        PRE_TRIGGER_REGEX: /poniżej|видите ниже|Transparency/i,
+        PRE_TRIGGER_REGEX: /poniżej|видите ниже|Transparency|Czy produkt jest zgodny|W przypadku tego produktu można pominąć ocenę/i,
         AUTO_TRIGGER_REGEX: /Przypisz (nowy|ponownie)|канирование номера LP:|Przedmiot wysłano do (?!PROBLEM-SOLVE\b).+/i,
         /**
          * KODY KIERUNKU: sprzedaż czy utylizacja.
