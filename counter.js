@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StatsHelper (Reactive Architecture Edition)
 // @namespace    statshelper.counter
-// @version      1.5.0
+// @version      1.6.2
 // @description  Stan reaktywny + EventBus + zmienne CSS. Licznik przetworzonych przedmiotów dla TREX.
 // @match        https://trex-prod-eu.aka.amazon.com/*
 // @run-at       document-end
@@ -19,7 +19,7 @@
 //  'BOM' zadziała po trzeciej literze i wyczyści bufor, więc 'BOMBA'
 //  nie da się wpisać nigdy. Pilnuje tego tests/18-passwords.test.js.
 // =====================================================================
-const SETTINGS_ACCESS_PASSWORDS = ['GORDONPAULE', 'BOMBA', 'JAREKHUESOS'];
+const SETTINGS_ACCESS_PASSWORDS = ['GORDONPAULE', 'BOMBA'];
 
 // =====================================================================
 //  LOGI W KONSOLI — GŁÓWNY WYŁĄCZNIK
@@ -57,6 +57,26 @@ const SCRIPT_LOGS_ENABLED = false;
 //  zmian: CHANGELOG.md.
 // ---------------------------------------------------------------------
 
+// =====================================================================
+//  CELE TEMPA — SZTUK NA GODZINĘ, OSOBNO DLA KAŻDEGO DZIAŁU
+//  ---------------------------------------------------------------
+//  Na celu stoją dwie rzeczy:
+//    - linia 10: procent bieżącego tempa od celu i cel na zmianę;
+//    - linia 9 (czas od ostatniego pojemnika): czerwienieje po
+//      podwójnym czasie przedmiotu, czyli 2 × 60 / cel minut.
+//      Przy celu 30 przedmiot ma 2 minuty, linia czerwienieje po 4.
+//
+//  Zmiana ma PŁATNYCH_GODZIN godzin pracy: obiad (30 min) jest
+//  niepłatny i do celu się nie wlicza. Przy celu 30 cel zmiany to
+//  30 × 10 = 300 sztuk.
+//
+//  FAST pracuje na tej samej karcie co CRET (ten sam adres T-REX),
+//  więc który z dwóch celów obowiązuje, wybiera się w panelu.
+//  0 albo brak wpisu — działu bez celu: linia 9 tylko liczy czas.
+// =====================================================================
+const RATE_TARGETS = { CRET: 47, FAST: 80, UG: 47, REFURB: 30, WHD: 25 };
+const PAID_SHIFT_HOURS = 10;
+
 (function() {
     'use strict';
 
@@ -93,21 +113,21 @@ const SCRIPT_LOGS_ENABLED = false;
     }
 
     const CONFIG = {
-        SCRIPT_VERSION: '1.5.0',
+        SCRIPT_VERSION: '1.6.2',
         SCRIPT_NAME: 'Helper (Reactive)',
         /**
-         * Prefiks kluczy w localStorage. Koduje SCHEMAT zapisanych danych,
-         * a nie numer wydania:
+         * Prefiks kluczy w localStorage. Niesie MAJOR i MINOR wersji
+         * (`statsHelper_v<MAJOR>_<MINOR>_0_`), PATCH go nie zmienia:
          *
-         *     prefiks się zmienia  <=>  rośnie wersja MAJOR
+         *     prefiks się zmienia  <=>  rośnie MAJOR albo MINOR
          *     prefiks się zmienia  =>   liczniki i ustawienia startują od zera
          *                          =>   aktualizacja tylko między zmianami
          *
-         * Nowe pole z wartością domyślną prefiksu nie zmienia. Zmienia go
-         * dopiero układ, w którym zapisane stare dane przykryłyby nowe wartości
-         * domyślne albo zostały źle odczytane.
+         * Dzięki temu każde wydanie z nowymi możliwościami startuje na czystym
+         * zapisie, a poprawka (PATCH) można przyjąć w trakcie zmiany. Zgodność
+         * z package.json sprawdza tests/02-defaults.test.js.
          */
-        SCRIPT_ID_PREFIX: 'statsHelper_v1_5_0_',
+        SCRIPT_ID_PREFIX: 'statsHelper_v1_6_0_',
         // Prefiksy poprzednich schematów. Ich klucze są usuwane przy starcie,
         // żeby na maszynach bez resetu sesji nie zbierały się śmieci. Przy
         // każdej zmianie SCRIPT_ID_PREFIX poprzedni trafia tutaj — pilnuje
@@ -115,7 +135,7 @@ const SCRIPT_LOGS_ENABLED = false;
         LEGACY_ID_PREFIXES: ['statsHelper_v8_0_0_', 'statsHelper_v8_1_0_', 'statsHelper_v8_2_0_',
                              'statsHelper_v8_3_0_', 'statsHelper_v8_4_0_', 'statsHelper_v8_5_0_',
                              'statsHelper_v8_6_0_', 'statsHelper_v9_0_0_', 'statsHelper_v9_2_0_',
-                             'statsHelper_v1_0_0_', 'statsHelper_v1_3_0_'],
+                             'statsHelper_v1_0_0_', 'statsHelper_v1_3_0_', 'statsHelper_v1_5_0_'],
         /**
          * Czy pisać do konsoli. Wartość startowa pochodzi z SCRIPT_LOGS_ENABLED
          * w nagłówku; tutaj żyje, bo SH.logsOn() i SH.logsOff() przełączają ją
@@ -165,6 +185,9 @@ const SCRIPT_LOGS_ENABLED = false;
          */
         KNOWN_TAB_TYPES: {
             CRET: { key: 'CRET', displayNameKey: 'tabName_CRET', baseColorHex: '#0078D7', urlKeyword: 'CRETURN' },
+            // UG ma własny gradingMode; CRETURN jest jego podłańcuchem, więc
+            // zapasowe dopasowanie od najdłuższego klucza sprawdza UG pierwszy.
+            UG: { key: 'UG', displayNameKey: 'tabName_UG', baseColorHex: '#8E44AD', urlKeyword: 'CRETURN_PRIMARY_GRADING' },
             REFURB: { key: 'REFURB', displayNameKey: 'tabName_REFURB', baseColorHex: '#FFA500', urlKeyword: 'CRETURN_REFURB' },
             WHD: { key: 'WHD', displayNameKey: 'tabName_WHD', baseColorHex: '#1EB41E', urlKeyword: 'WAREHOUSE_DEALS' },
             OTHER: { key: 'OTHER', displayNameKey: 'tabName_OTHER', baseColorHex: '#9E9E9E' },
@@ -301,11 +324,69 @@ const SCRIPT_LOGS_ENABLED = false;
         // nieskończonym ping-pongiem zapisów między kartami.
         REMOTE_APPLY_SUPPRESS_MS: 2500,
         // Wyzwalacze liczenia: pierwszy podnosi flagę „zaczął się przedmiot”,
-        // drugi przy podniesionej fladze daje +1. Teksty rosyjskie to napisy
-        // samego T-REX. PROBLEM-SOLVE jest wyłączony, bo taki przedmiot wraca
-        // do obsługi i zostałby policzony dwa razy.
-        PRE_TRIGGER_REGEX: /poniżej|видите ниже|Transparency|Czy produkt jest zgodny|W przypadku tego produktu można pominąć ocenę/i,
-        AUTO_TRIGGER_REGEX: /Przypisz (nowy|ponownie)|канирование номера LP:|Przedmiot wysłano do (?!PROBLEM-SOLVE\b).+/i,
+        // drugi przy podniesionej fladze daje +1. Teksty rosyjskie i ukraińskie
+        // to napisy samego T-REX. PROBLEM-SOLVE jest wyłączony, bo taki
+        // przedmiot wraca do obsługi i zostałby policzony dwa razy.
+        PRE_TRIGGER_REGEX: /poniżej|видите ниже|зображенню нижче|Transparency|Czy produkt jest zgodny|W przypadku tego produktu można pominąć ocenę/i,
+        AUTO_TRIGGER_REGEX: /Przypisz (nowy|ponownie)|призначити новий|перепризначте|канирование номера LP:|канування LPN:|Przedmiot wysłano do (?!PROBLEM-SOLVE\b).+/i,
+        /**
+         * POLE POJEMNIKA (tote). Rozpoznaje się je po podpisie `aria-label`
+         * w trzech językach T-REX albo po `data-testid`. Pojemnik jest
+         * przybity, gdy po Enterze z poprawną nazwą pole zniknie ze strony —
+         * bez limitu czasu: człowiek potrafi odejść od stanowiska z otwartym
+         * krokiem, a liczyć wolno dopiero po zniknięciu pola.
+         *
+         * Nazwa: dwie litery (t/w/c, potem s, dowolna wielkość), dalej litery,
+         * cyfry i podkreślnik, razem najwyżej 15 znaków.
+         */
+        TOTE_INPUT_LABELS: ['wprowadź pojemnik', 'вкажіть транспортну тару', 'введите тару'],
+        TOTE_INPUT_TESTID: 'tote-input-label',
+        TOTE_VALUE_REGEX: /^[twc]s[a-z0-9_]{1,13}$/i,
+        /**
+         * Naklejka uszkodzonego towaru. W UG pojawia się tylko wtedy, gdy
+         * przedmiot idzie na sprzedaż jako przeceniony — taki przedmiot liczy
+         * się podwójnie i jest sprzedażą, zanim przyjdzie kod sortowania.
+         * W WHD ten sam element stoi przy każdej sprzedaży, dlatego reguła
+         * dotyczy wyłącznie UG.
+         */
+        STICKER_ELEMENT_ID: 'sticker-back-hide',
+        STICKER_TAB_TYPE: 'UG',
+        STICKER_ITEM_WEIGHT: 2,
+        // Pola, w które wchodzi LPN przedmiotu (most GRAVIS).
+        LPN_INPUT_TESTIDS: ['lpn-input-label', 'package-input', 'wd-item-scan-label'],
+        LPN_VALUE_REGEX: /^lpn[a-z0-9]+$/i,
+        // Pole skanu przedmiotu, pod którym pokazuje się ASIN z GRAVIS.
+        ITEM_SCAN_INPUT_TESTID: 'item-scan-input',
+        ASIN_VALUE_REGEX: /^[A-Z0-9]{10}$/,
+        // Auto-LPN: przycisk „Przypisz ponownie LPN” i przerwa między wciśnięciami.
+        REASSIGN_LPN_BUTTON_TESTID: 'button-reassign-lpn-id',
+        AUTO_LPN_COOLDOWN_MS: 10000,
+        // Pierwsza litera, po której wpis w polu pojemnika uznaje się za pojemnik.
+        AUTO_LPN_TOTE_PREFIXES: ['t', 'w', 'c'],
+        /**
+         * GRAVIS — wewnętrzne narzędzie z ASIN przypisanym do LPN. Dwie karty
+         * rozmawiają przez postMessage, a nie przez sieć: karta T-REX otwiera
+         * GRAVIS (window.open daje uchwyt okna), skrypt uruchomiony w GRAVIS
+         * odpowiada przez window.opener. Każda strona przyjmuje wiadomość
+         * tylko od znanego okna i znanego adresu.
+         */
+        GRAVIS_URL: 'https://eu-cretfc-tools-dub.dub.proxy.amazon.com/gravis',
+        GRAVIS_WINDOW_NAME: 'statsHelperGravis',
+        TREX_ORIGIN: 'https://trex-prod-eu.aka.amazon.com',
+        GRAVIS_TAB_TYPES: ['CRET', 'UG'],
+        GRAVIS_ASIN_TIMEOUT_MS: 8000,
+        GRAVIS_POLL_MS: 250,
+        // Skrypt w GRAVIS daje znać, że żyje; brak sygnału przez GRAVIS_STALE_MS
+        // to karta przeładowana (np. uśpiona przez przeglądarkę) — T-REX
+        // podpowiada wtedy, żeby kliknąć tam zakładkę jeszcze raz.
+        GRAVIS_HEARTBEAT_MS: 10000,
+        GRAVIS_STALE_MS: 30000,
+        // Panel ustawień otwiera się przy każdym uruchomieniu (decyzja autora).
+        OPEN_SETTINGS_ON_START: true,
+        // Linia 9 po przekroczeniu podwójnego czasu przedmiotu.
+        OFF_TASK_COLOR: '#E53935',
+        RATE_TARGETS,
+        PAID_SHIFT_HOURS,
         /**
          * KODY KIERUNKU: sprzedaż czy utylizacja.
          *
@@ -484,7 +565,8 @@ const SCRIPT_LOGS_ENABLED = false;
         PRICE_ASIN_FROM_TEXT: /\b(B[01][A-Z0-9]{8})\b/,
 
         DEFAULT_LANGUAGE: 'pl',
-        AVAILABLE_LANGUAGES:[{ code: 'pl', name: 'Polski' }, { code: 'en', name: 'English' }, { code: 'ru', name: 'Русский' }],
+        // Kolejność listy wyboru: polski (domyślny), ukraiński, rosyjski, angielski.
+        AVAILABLE_LANGUAGES:[{ code: 'pl', name: 'Polski' }, { code: 'uk', name: 'Українська' }, { code: 'ru', name: 'Русский' }, { code: 'en', name: 'English' }],
     };
 
     /**
@@ -504,7 +586,23 @@ const SCRIPT_LOGS_ENABLED = false;
         displayCurrency: 'EUR',
         globalStatsContributionKnown: Object.keys(CONFIG.KNOWN_TAB_TYPES)
             .reduce((acc, key) => ({ ...acc, [key]: true }), {}),
-        keyboardShortcuts: { INCREMENT: 'None', DECREMENT: 'None' },
+        keyboardShortcuts: { INCREMENT: 'None', DECREMENT: 'None', TOGGLE_WINDOW: 'None' },
+        // Który cel obowiązuje na karcie CRET: CRET albo FAST (ten sam adres).
+        cretProfile: 'CRET',
+        /**
+         * Doświadczalne: zaliczanie przedmiotu po przybiciu pojemnika zamiast
+         * wyzwalacza z tekstu strony. Wyłączone — oba sposoby naraz liczyłyby
+         * każdy przedmiot dwa razy. Porównanie obu: SH.tote().
+         */
+        toteCounting: false,
+        autoLpn: false,
+        /**
+         * Most GRAVIS — domyślnie włączony (decyzja autora, CHANGELOG): karty
+         * rozmawiają przez postMessage w przeglądarce, bez sieci. Włączony most
+         * tylko słucha; okno GRAVIS otwiera człowiek przyciskiem w panelu,
+         * a T-REX nie zmienia wyglądu, dopóki skrypt w GRAVIS się nie odezwie.
+         */
+        gravisAsin: true,
         triggerMutationDebounceMs: CONFIG.DEFAULT_TRIGGER_MUTATION_DEBOUNCE_MS,
         settingsPanelWidth: CONFIG.SETTINGS_PANEL_INITIAL_WIDTH_PX,
         customTabSettings: {},
@@ -520,7 +618,7 @@ const SCRIPT_LOGS_ENABLED = false;
         line2_globalSummary: {
             visible: false, colorHex: '#808080', alpha: 60, fontSize: 14,
             multicolor: true,
-            customColors: { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
+            customColors: { CRET: '#0078D7', UG: '#8E44AD', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
         },
         line3_shiftInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
         line4_lunchInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 14 },
@@ -538,7 +636,21 @@ const SCRIPT_LOGS_ENABLED = false;
          * tempo, procent, przepracowany czas). Linie 1, 2 i 7 pokazują całą
          * zmianę, ta — proces, przy którym człowiek siedzi teraz.
          */
-        line8_taskInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 13 }
+        line8_taskInfo: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 13 },
+        /**
+         * LINIA 9 — czas od ostatniego przybitego pojemnika. Po podwójnym
+         * czasie przedmiotu (z celu działu) robi się czerwona i dopisuje
+         * narosły czas bezczynności: `7m 00s +3m 00s`. Widoczna od startu —
+         * świadomy wyjątek od zasady „nowe domyślnie wyłączone” (decyzja
+         * autora, CHANGELOG): nie dotyka sieci, a do pierwszego pojemnika
+         * jest pusta.
+         */
+        line9_offTask: { visible: false, colorHex: '#808080', alpha: 50, fontSize: 13 },
+        /**
+         * LINIA 10 — cel działu: procent bieżącego tempa od celu oraz
+         * zrobione sztuki wobec celu zmiany, np. `47/h 85% 236/470`.
+         */
+        line10_target: { visible: false, colorHex: '#808080', alpha: 60, fontSize: 13 }
     };
 
     const DEFAULT_LOCAL_CONFIG = {
@@ -692,7 +804,7 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'sold ${sold}, unsold ${unsold}, undetermined ${undet}',
             lineSettings_valueSum: 'Line 6: Processed Value Sum',
             lineSettings_compact: 'Line 7: Compact counter',
-            lineSettings_compactHint: 'Three numbers: items per hour (all tabs), items done and the sales percentage. Nothing else.',
+            lineSettings_compactHint: 'Task rate of the target rate, shift packages of the shift target, sale percent and time since the last tote (red when idle too long).',
             lineSettings_taskInfo: 'Line 8: Current task',
             priceModule_section: 'Price Module (network)',
             priceModule_enabled: 'Enable the price module',
@@ -770,7 +882,7 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_bg: 'Card background', priceCard_drag: 'Make Card Draggable',
             priceCard_showSource: 'Show price source',
             configCode_section: 'Settings code',
-            configCode_hint: 'The code holds everything you changed away from the defaults: lines, colours, transparency, sizes, position, switches. Paste it on another machine and you get the same interface.',
+            configCode_hint: 'The code holds everything you changed away from the defaults: lines, colours, transpa\u200brency, sizes, position, switches. Paste it on another machine and you get the same interface.',
             configCode_yours: 'Your code',
             configCode_link: 'Ready-made bookmarklet',
             configCode_linkMissing: 'This build has no release address, so there is no ready-made bookmarklet. The code above works as usual: paste it on another machine.',
@@ -784,6 +896,27 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_searching: 'looking up price...', priceCard_noPrice: 'price not available',
             priceCard_noAsin: 'no ASIN on page', priceCard_item: 'item', priceCard_rrp: 'RRP',
             priceCard_seeChart: 'see the chart', priceCard_cached: 'cached', priceCard_limit: 'session limit reached',
+            tabName_UG: 'UG',
+            lineSettings_offTask: 'Line 9: Time Since Last Tote', lineSettings_target: 'Line 10: Department Target',
+            lineSettings_offTaskHint: 'Time since the last tote was closed. Turns red after twice the item time of the target and shows the idle time on top.',
+            toggleWindowKey: 'Hide/Show Window Key',
+            section_workflow: 'Target and Workstation Helpers',
+            workflow_cretProfile: 'CRET tab target',
+            workflow_targetHint: 'Target of this tab: ${value}/h. Targets are edited at the top of the file (RATE_TARGETS).',
+            workflow_toteCounting: 'Count items by closed tote (experimental)',
+            workflow_toteCountingHint: 'Replaces the page-text trigger. Compare both in the console: SH.tote().',
+            workflow_autoLpn: 'Auto-LPN: press "Reassign LPN" when a label is scanned into the tote field',
+            workflow_gravis: 'Suggest ASIN from GRAVIS',
+            workflow_gravisHowTo: '1. Press the button below — GRAVIS opens in a new tab. 2. On the GRAVIS tab click this script\'s bookmark once. Afterwards every LPN goes to GRAVIS and the ASIN shows up under the item scan field: click it to paste, Enter is yours.',
+            workflow_gravisOpen: 'Open GRAVIS', workflow_gravisConnected: 'GRAVIS connected — open again',
+            statsOf: 'of',
+            gravis_restartHint: 'Click the script bookmark on the GRAVIS tab again',
+            gravis_badgeOk: 'StatsHelper ✓ T-REX',
+            gravis_badgeNoOpener: 'StatsHelper: open GRAVIS with the button in the T-REX panel',
+            tasks_segments: 'Periods',
+            tasks_segmentsHint: 'Comma separated, e.g. 06:30-09:15, 23:30-02:00. A period may cross midnight; lunch is not counted. Leave the end empty to keep the clock running.',
+            tasks_segmentsApply: 'Save periods',
+            tasks_segmentsError: 'Periods not saved: check the format and that they do not overlap.',
             multicolorMode: 'Multi-Color Departments', tabColors: 'Dept. Colors:'
         },
         pl: {
@@ -822,12 +955,12 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'sprzedane ${sold}, niesprzedane ${unsold}, nieokreślone ${undet}',
             lineSettings_valueSum: 'Linia 6: Suma wartości',
             lineSettings_compact: 'Linia 7: Licznik zwięzły',
-            lineSettings_compactHint: 'Trzy liczby: paczki na godzinę (wszystkie karty), zrobione sztuki i procent sprzedaży. Nic więcej.',
+            lineSettings_compactHint: 'Tempo bieżącego zadania z tempa docelowego, paczki zmiany z celu zmiany, procent sprzedaży i czas od ostatniego pojemnika (czerwony przy zbyt długiej przerwie).',
             lineSettings_taskInfo: 'Linia 8: Bieżące zadanie',
             priceModule_section: 'Moduł cen (sieć)',
             priceModule_enabled: 'Włącz moduł cen',
             priceModule_hint: 'Domyślnie WYŁĄCZONY. Póki jest wyłączony, skrypt nie wysyła ŻADNYCH zapytań do internetu: ani po kursy walut, ani po wykres Keepa, ani do r.jina.ai. Licznik przedmiotów, zmiana, przerwy i linia 7 działają bez sieci.',
-            priceModule_offNotice: 'Moduł wyłączony — ustawienia poniżej zaczną działać po jego włączeniu.',
+            priceModule_offNotice: 'Moduł wyłączony — ustawienia poni\u200bżej zaczną działać po jego włączeniu.',
             priceModule_fxOffline: 'wbudowane (bez sieci)',
             lineSettings_valueSumHint: 'Przezroczystość działa na całą linię. Kolor dotyczy tylko liczby sztuk — plus zostaje zielony, minus czerwony, bo to po nich rozpoznaje się znak.',
             valueLog_section: 'Dziennik wartości',
@@ -912,7 +1045,177 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_searching: 'szukam ceny...', priceCard_noPrice: 'brak ceny',
             priceCard_noAsin: 'nie znaleziono ASIN', priceCard_item: 'przedmiot', priceCard_rrp: 'katalogowa',
             priceCard_seeChart: 'cena na wykresie', priceCard_cached: 'z pamięci', priceCard_limit: 'limit sesji',
+            tabName_UG: 'UG',
+            lineSettings_offTask: 'Linia 9: czas od pojemnika', lineSettings_target: 'Linia 10: cel działu',
+            lineSettings_offTaskHint: 'Czas od ostatniego przybitego pojemnika. Po podwójnym czasie przedmiotu z celu robi się czerwona i dopisuje czas bezczynności.',
+            toggleWindowKey: 'Ukryj/pokaż okno',
+            section_workflow: 'Cel i pomoce stanowiska',
+            workflow_cretProfile: 'Cel karty CRET',
+            workflow_targetHint: 'Cel tej karty: ${value}/h. Cele zmienia się na górze pliku (RATE_TARGETS).',
+            workflow_toteCounting: 'Liczenie po przybitym pojemniku (doświadczalne)',
+            workflow_toteCountingHint: 'Zastępuje wyzwalacz z tekstu strony. Porównanie obu w konsoli: SH.tote().',
+            workflow_autoLpn: 'Auto-LPN: „Przypisz\u200b ponownie LPN”, gdy w pole pojemnika trafi etykieta',
+            workflow_gravis: 'Podpowiadaj ASIN z GRAVIS',
+            workflow_gravisHowTo: '1. Naciśnij przycisk niżej — GRAVIS otworzy się w nowej karcie. 2. Na karcie GRAVIS kliknij raz zakładkę tego skryptu. Od tej chwili każdy LPN idzie do GRAVIS, a ASIN pojawia się pod polem skanu przedmiotu: kliknięcie go wstawia, Enter naciskasz sam.',
+            workflow_gravisOpen: 'Otwórz GRAVIS', workflow_gravisConnected: 'GRAVIS połączony — otwórz ponownie',
+            statsOf: 'z',
+            gravis_restartHint: 'Kliknij ponownie zakładkę skryptu na karcie GRAVIS',
+            gravis_badgeOk: 'StatsHelper ✓ T-REX',
+            gravis_badgeNoOpener: 'StatsHelper: otwórz GRAVIS przyciskiem w panelu T-REX',
+            tasks_segments: 'Odcinki',
+            tasks_segmentsHint: 'Po przecinku, np. 06:30-09:15, 23:30-02:00. Odcinek może przechodzić przez północ, obiad się nie liczy. Pusty koniec — zegar chodzi dalej.',
+            tasks_segmentsApply: 'Zapisz odcinki',
+            tasks_segmentsError: 'Odcinki nie zapisane: sprawdź zapis i czy nie nachodzą na siebie.',
             multicolorMode: 'Wielokolorowe Działy', tabColors: 'Kolory Działów:'
+        },
+        uk: {
+            scriptLoaded: '${scriptName} v${version} Завантажено.', yes: 'Так', no: 'Ні', notApplicable: 'Н/Д',
+            error_items_per_hour_unavailable: '~0.0/год (замало часу)', fromUnit: 'від', inUnit: 'за',
+            hoursShort: 'г', minutesShort: 'хв', secondsShort: 'с', statsPerHourUnit: '/год', completedUnit: 'готово',
+            taskPausedMark: '(пауза)',
+            section_tasks: 'Завдання',
+            tasks_hint: 'Завдання — це один процес роботи з власним годинником. Перемикання не чіпає лічильники зміни: окремо рахується лише темп, тож запізнення до початку процесу його більше не псує.',
+            tasks_name: 'Назва',
+            tasks_startedAt: 'Початок',
+            tasks_now: 'зараз',
+            tasks_minutesBack: '-${value} хв',
+            tasks_shiftStart: 'початок зміни',
+            tasks_packages: 'Пачки',
+            tasks_rate: 'Темп',
+            tasks_summary: 'Продаж / час',
+            tasks_pause: 'Зупинити годинник',
+            tasks_unpause: 'Запустити годинник',
+            tasks_new: 'Нове завдання',
+            tasks_newPlaceholder: 'назва нового завдання',
+            tasks_history: 'Завдання цієї зміни',
+            tasks_resume: 'Продовжити',
+            tasks_delete: 'Видалити',
+            tasks_deleteConfirm: 'Видалити завдання «${name}»? Його пачки зникнуть з лічильника зміни.',
+            tasks_ongoing: 'зараз',
+            lineSettings_taskInfoHint: 'Назва поточного завдання та його власні числа: пачки, темп, відсоток продажу, відпрацьований час. Рядки вище описують усю зміну, цей — процес, яким ви зайняті зараз.',
+            tabName_CRET: 'CRET', tabName_REFURB: 'REFURB', tabName_WHD: 'WHD', tabName_OTHER: 'Інше', tabName_UNKNOWN: 'НЕВІДОМО',
+            statsLine1_current: '${tabName} ${itemsPerHour}${statsPerHourUnit} (${count} ${completedUnit} ${inUnit} ${workTimeFormatted})',
+            statsLine2_global_separator: ' ', statsLine2_global_tab_format: '${tabName} ${itemsPerHour}${statsPerHourUnit}(${count})', statsLine2_global_total_format: '= ~${totalItemsPerHour}${statsPerHourUnit} (${totalCount})',
+            statsLine3_shift: '${shiftType} зміна (${shiftStartTime})', statsLine4_lunch: 'Перерва #${lunchNumber} (${lunchStartTime} - ${lunchEndTime})', statsLine5_clock: '[ ${currentTime} ]',
+            statsLine6_undet: '?${n}',
+            statsLine6_items: '${n} шт',
+            valueLog_fx: 'Курси: ${src} (${brief})',
+            valueLog_fxRefresh: 'Оновити курси',
+            valueLog_routeStats: 'продано ${sold}, не продано ${unsold}, не визначено ${undet}',
+            lineSettings_valueSum: 'Рядок 6: Сума вартості',
+            lineSettings_compact: 'Рядок 7: Компактний лічильник',
+            lineSettings_compactHint: 'Темп поточного завдання з цільового, пачки зміни з цілі зміни, відсоток продажу й час від останньої тари (червоний, якщо простій задовгий).',
+            lineSettings_taskInfo: 'Рядок 8: Поточне завдання',
+            priceModule_section: 'Модуль цін (мережа)',
+            priceModule_enabled: 'Увімкнути модуль цін',
+            priceModule_hint: 'За замовчуванням ВИМКНЕНО. Поки він вимкнений, скрипт не робить ЖОДНИХ запитів в інтернет: ні за курсами валют, ні за графіком Keepa, ні до r.jina.ai. Лічильник предметів, зміна, перерви й рядок 7 працюють без мережі.',
+            priceModule_offNotice: 'Модуль вимкнено — налаштування нижче запрацюють після його увімкнення.',
+            priceModule_fxOffline: 'вбудовані (без мережі)',
+            lineSettings_valueSumHint: 'Прозорість діє на весь рядок. Колір — лише на кількість штук: плюс лишається зеленим, мінус червоним, за ними й читається знак.',
+            valueLog_section: 'Журнал вартості',
+            valueLog_enabled: 'Вести журнал вартості зроблених предметів',
+            valueLog_hint: 'Рахуються лише предмети, що пройшли повний шлях (лічильник додав +1).',
+            valueLog_reset: 'Очистити журнал вартості',
+            valueLog_resetConfirm: 'Очистити журнал вартості цієї зміни? Лічильники предметів залишаться.',
+            valueLog_export: 'Вивести журнал у консоль',
+            valueLog_stats: '${count} шт., Σ ${sum} ${currency}, без ціни: ${unpriced}',
+            shift_day: 'ДЕННА', shift_night: 'НІЧНА', lunch_day1: 'Перерва вдень 1 (11:20-11:50)', lunch_day2: 'Перерва вдень 2 (11:50-12:20)', lunch_day3: 'Перерва вдень 3 (12:20-12:50)', lunch_day4: 'Перерва вдень 4 (12:50-13:20)',
+            lunch_night1: 'Перерва вночі 1 (23:20-23:50)', lunch_night2: 'Перерва вночі 2 (23:50-00:20)', lunch_night3: 'Перерва вночі 3 (00:20-00:50)', lunch_night4: 'Перерва вночі 4 (00:50-01:20)',
+            settingsPanelTitle: 'Налаштування ${scriptName}', settings_applyAndCloseButton: 'Застосувати й закрити', settings_applyButton: 'Застосувати',
+            settings_resetAllDataButton: 'Скинути всі дані', settings_resetWindowPositionButton: 'Скинути позицію вікна',
+            settings_resetConfirm: 'Видалити всі дані StatsHelper (налаштування й лічильники)? Дані самого TREX не зачіпаються.',
+            settings_resetCountersButton: 'Скинути лише лічильники', settings_resetCountersConfirm: 'Обнулити лічильники предметів? Налаштування вигляду збережуться.',
+            newShiftDetected: 'Виявлено нову зміну — лічильники предметів обнулено.',
+            resetNotice_stale: 'Дані минулої зміни — лічильники предметів обнулено.',
+            notice_storageFull: 'Пам\'ять браузера переповнена — числа на екрані правильні, але не переживуть перезавантаження сторінки (F5).',
+            resetNotice_manual: 'Лічильники предметів обнулено.',
+            settings_manualCounterInputLabel: 'Лічильник', section_general: 'Загальні', section_currentTab: 'Поточна вкладка (${tabInstanceId})',
+            section_visualAids: 'Візуальні ефекти (для ${tabName})', section_statsWindow: 'Вигляд вікна статистики', section_globalStats: 'Глобальна статистика',
+            section_keyboardShortcuts: 'Гарячі клавіші', section_autoIncrement: 'Авто-інкремент', section_lunchSelection: 'Вибір перерви', section_otherCustomTabs: 'Інші користувацькі вкладки',
+            language: 'Мова', customTabDisplayName: 'Відображуване ім\'я', customTabIncludeInGlobal: 'Включити в глобальну суму', overlayOpacity: 'Непрозорість накладання: ${value}%',
+            showPageIndicator: 'Показати текстовий індикатор', windowBgSettings: 'Фон вікна', lineSettings_currentTab: 'Рядок 1: Статистика поточної вкладки',
+            lineSettings_globalSummary: 'Рядок 2: Глобальне зведення', lineSettings_shiftInfo: 'Рядок 3: Інформація про зміну', lineSettings_lunchInfo: 'Рядок 4: Інформація про перерву', lineSettings_realTimeClock: 'Рядок 5: Годинник',
+            fontFamily: 'Шрифт', fontSize: 'Розмір шрифту: ${value}px', dragStatsWindowButton: 'Увімкнути перетягування', dragStatsWindowActiveButton: 'Вікно переміщується (клікніть, щоб зафіксувати)',
+            includeInGlobal_known: 'Включити ${tabName}', incrementKey: 'Кнопка інкременту (+1)', decrementKey: 'Кнопка декременту (-1)', scanIntervalAutoIncrement: 'Інтервал сканування: ${value}мс',
+            noCustomTabsConfigured: 'Інших вкладок не налаштовано.', customTabEntryFormat: '${displayName} (${instanceId_short}) - Включено: ${isIncludedStr}',
+            fontFamily_default: 'За замовчуванням', fontFamily_monospace: 'Моноширинний', fontFamily_sans_serif_thin: 'Тонкий без засічок',
+            key_None: 'Вимкнено', key_ShiftRight: 'Правий Shift', key_ControlRight: 'Правий Ctrl', key_AltRight: 'Правий Alt', key_ScrollLock: 'Scroll Lock', key_PauseBreak: 'Pause/Break', key_Insert: 'Insert',
+            key_Numpad0: 'Num 0', key_NumpadMultiply: 'Num *', key_NumpadSubtract: 'Num -', key_NumpadAdd: 'Num +', key_F10: 'F10',
+            initialNotification_currentTab: 'Поточна вкладка:', initialNotification_shiftStart: 'Початок зміни:',
+            priceCard_cspImg: 'CSP сторінки блокує графік Keepa',
+            priceCard_cspNet: 'CSP сторінки блокує запит ціни',
+            priceCard_cspBoth: 'CSP сторінки блокує обидва джерела',
+            priceCard_marketplace: 'Магазин Amazon',
+            priceCard_fallback: 'Шукати в інших магазинах, якщо ціни немає',
+            priceCard_fallbackHint: 'Лише для одного предмета, у випадковому порядку, раз на секунду. Магазин за замовчуванням не змінюється.',
+            priceCard_searchingOther: 'шукаю в інших магазинах…',
+            priceCard_foundIn: 'знайдено на ${host}',
+            priceCard_marketNoData: 'У Keepa немає графіка для цього магазину — посилання працює, ціни не буде',
+            priceCard_displayCurrency: 'Показувати суми в',
+            priceCard_displayNative: 'валюті магазину (без перерахунку)',
+            priceCard_displayCurrencyHint: 'Суми завжди рахуються в євро, вибрана валюта — лише спосіб показу, тож зміна посеред зміни нічого не втрачає. Перерахована ціна позначена знаком ≈.',
+            priceCard_openHint: 'Клік по ASIN відкриває сторінку товару',
+            priceCard_hiddenHint: 'Картку приховано — ціна все одно читається й іде в суму',
+            priceCard_showCard: 'Показувати картку на екрані',
+            priceCard_refreshing: 'оновлюється…',
+            priceCard_source: 'Джерело ціни',
+            priceCard_src_ocr: 'Ціна текстом (розпізнана з графіка)',
+            priceCard_src_graph: 'Зображення графіка Keepa',
+            priceCard_src_jina: 'Текстовий запит (r.jina.ai)',
+            priceCard_ocrFail: 'не вдалося прочитати ціну з графіка',
+            priceCard_cspOcr: 'CSP сторінки блокує зображення Keepa — ціну не прочитати',
+            priceCard_fromCache: 'з кешу',
+            priceCard_cacheAge: '${days} доб. тому',
+            priceCard_graphMode: 'Область графіка', priceCard_mode_legend: 'Лише ціни (з графіка)',
+            priceCard_mode_right: 'Права частина, натуральний розмір', priceCard_mode_full: 'Весь графік',
+            priceCard_textOff: 'текстовий запит вимкнено',
+            priceCard_section: 'Картка ціни', priceCard_enabled: 'Показувати картку ціни',
+            priceCard_showPrice: 'Показувати поточну ціну', priceCard_showRrp: 'Показувати RRP',
+            priceCard_showGraph: 'Показувати графік Keepa',
+            priceCard_showAsin: 'Показувати код товару (ASIN)',
+            priceCard_asinClickable: 'Код товару — посилання на магазин',
+            priceCard_asinClickableHint: 'За замовчуванням вимкнено: посилання — єдине місце картки, що ловить мишу й може перекрити кнопку T-REX.',
+            priceCard_showLatency: 'Показувати час отримання ціни (мс)',
+            priceCard_width: 'Ширина картки: ${value}px', priceCard_fontSize: 'Розмір ціни: ${value}px',
+            priceCard_bg: 'Фон картки', priceCard_drag: 'Увімкнути перетягування картки',
+            priceCard_showSource: 'Показувати джерело ціни',
+            configCode_section: 'Код налаштувань',
+            configCode_hint: 'У коді лежить усе, що ви змінили відносно значень за замовчуванням: рядки, кольори, прозорість, розміри, положення, вимикачі. Вставлений на іншій машині дає той самий інтерфейс.',
+            configCode_yours: 'Ваш код',
+            configCode_link: 'Готова закладка',
+            configCode_linkMissing: 'У цій збірці не задано адресу релізу, тому готової закладки немає. Код вище працює як завжди: вставте його на іншій машині.',
+            configCode_select: 'Виділити для копіювання',
+            configCode_paste: 'Вставте сюди код',
+            configCode_apply: 'Застосувати код',
+            configCode_applied: 'Застосовано налаштувань: ${n}',
+            priceCard_textColor: 'Колір тексту',
+            priceCard_textColorHint: 'Один колір на всі рядки картки. Повідомлення про те, чому ціни немає, показується завжди, незалежно від вимикачів.',
+            priceCard_dragActive: 'Картка переміщується (клік, щоб зафіксувати)', priceCard_resetPosition: 'Скинути позицію картки',
+            priceCard_searching: 'шукаю ціну...', priceCard_noPrice: 'ціни немає',
+            priceCard_noAsin: 'ASIN не знайдено', priceCard_item: 'предмет', priceCard_rrp: 'RRP',
+            priceCard_seeChart: 'ціна на графіку', priceCard_cached: 'з кешу', priceCard_limit: 'ліміт сесії',
+            tabName_UG: 'UG',
+            lineSettings_offTask: 'Рядок 9: час від тари', lineSettings_target: 'Рядок 10: ціль відділу',
+            lineSettings_offTaskHint: 'Час від останньої закритої тари. Після подвійного часу предмета за ціллю червоніє й дописує час простою.',
+            toggleWindowKey: 'Сховати/показати вікно',
+            section_workflow: 'Ціль і помічники робочого місця',
+            workflow_cretProfile: 'Ціль вкладки CRET',
+            workflow_targetHint: 'Ціль цієї вкладки: ${value}/год. Цілі змінюються на початку файлу (RATE_TARGETS).',
+            workflow_toteCounting: 'Рахувати за закритою тарою (експериментально)',
+            workflow_toteCountingHint: 'Замінює тригер за текстом сторінки. Порівняння обох у консолі: SH.tote().',
+            workflow_autoLpn: 'Авто-LPN: «Перепризначити LPN», якщо в поле тари потрапила етикетка',
+            workflow_gravis: 'Підтягувати ASIN з GRAVIS',
+            workflow_gravisHowTo: '1. Натисніть кнопку нижче — GRAVIS відкриється в новій вкладці. 2. На вкладці GRAVIS один раз клікніть закладку цього скрипта. Далі кожен LPN іде в GRAVIS, а ASIN з\'являється під полем скану предмета: клік вставляє його, Enter натискаєте самі.',
+            workflow_gravisOpen: 'Відкрити GRAVIS', workflow_gravisConnected: 'GRAVIS підключено — відкрити знову',
+            statsOf: 'з',
+            gravis_restartHint: 'Клікніть ще раз закладку скрипта на вкладці GRAVIS',
+            gravis_badgeOk: 'StatsHelper ✓ T-REX',
+            gravis_badgeNoOpener: 'StatsHelper: відкрийте GRAVIS кнопкою в панелі T-REX',
+            tasks_segments: 'Відрізки',
+            tasks_segmentsHint: 'Через кому, напр. 06:30-09:15, 23:30-02:00. Відрізок може переходити через північ, обід не рахується. Порожній кінець — годинник іде далі.',
+            tasks_segmentsApply: 'Зберегти відрізки',
+            tasks_segmentsError: 'Відрізки не збережено: перевірте запис і чи не накладаються вони.',
+            multicolorMode: 'Різнокольорові відділи', tabColors: 'Кольори відділів:'
         },
         ru: {
             scriptLoaded: '${scriptName} v${version} Загружен.', yes: 'Да', no: 'Нет', notApplicable: 'Н/Д',
@@ -950,7 +1253,7 @@ const SCRIPT_LOGS_ENABLED = false;
             valueLog_routeStats: 'продано ${sold}, непродано ${unsold}, не определено ${undet}',
             lineSettings_valueSum: 'Строка 6: Сумма стоимости',
             lineSettings_compact: 'Строка 7: Компактный счётчик',
-            lineSettings_compactHint: 'Три числа: предметов в час (все вкладки), сделано штук и процент продажи. Больше ничего.',
+            lineSettings_compactHint: 'Темп текущей задачи из целевого, пачки смены из цели смены, процент продажи и время от последнего тоута (красный, если простой слишком долгий).',
             lineSettings_taskInfo: 'Строка 8: Текущая задача',
             priceModule_section: 'Модуль цен (сеть)',
             priceModule_enabled: 'Включить модуль цен',
@@ -1040,6 +1343,27 @@ const SCRIPT_LOGS_ENABLED = false;
             priceCard_searching: 'ищу цену...', priceCard_noPrice: 'цены нет',
             priceCard_noAsin: 'ASIN не найден', priceCard_item: 'предмет', priceCard_rrp: 'RRP',
             priceCard_seeChart: 'цена на графике', priceCard_cached: 'из кэша', priceCard_limit: 'лимит сессии',
+            tabName_UG: 'UG',
+            lineSettings_offTask: 'Строка 9: время от тоута', lineSettings_target: 'Строка 10: цель отдела',
+            lineSettings_offTaskHint: 'Время с последнего закрытого тоута. После двойного времени предмета по цели краснеет и дописывает время простоя.',
+            toggleWindowKey: 'Скрыть/показать окно',
+            section_workflow: 'Цель и помощники рабочего места',
+            workflow_cretProfile: 'Цель вкладки CRET',
+            workflow_targetHint: 'Цель этой вкладки: ${value}/ч. Цели меняются в начале файла (RATE_TARGETS).',
+            workflow_toteCounting: 'Считать по закрытому тоуту (экспериментально)',
+            workflow_toteCountingHint: 'Заменяет триггер по тексту страницы. Сравнение обоих в консоли: SH.tote().',
+            workflow_autoLpn: 'Авто-LPN: «Назначить LPN заново», если в поле тоута попала этикетка',
+            workflow_gravis: 'Подтягивать ASIN из GRAVIS',
+            workflow_gravisHowTo: '1. Нажмите кнопку ниже — GRAVIS откроется в новой вкладке. 2. На вкладке GRAVIS один раз кликните закладку этого скрипта. Дальше каждый LPN уходит в GRAVIS, а ASIN появляется под полем скана предмета: клик вставляет его, Enter нажимаете сами.',
+            workflow_gravisOpen: 'Открыть GRAVIS', workflow_gravisConnected: 'GRAVIS подключён — открыть снова',
+            statsOf: 'из',
+            gravis_restartHint: 'Кликните ещё раз закладку скрипта на вкладке GRAVIS',
+            gravis_badgeOk: 'StatsHelper ✓ T-REX',
+            gravis_badgeNoOpener: 'StatsHelper: откройте GRAVIS кнопкой в панели T-REX',
+            tasks_segments: 'Отрезки',
+            tasks_segmentsHint: 'Через запятую, напр. 06:30-09:15, 23:30-02:00. Отрезок может переходить через полночь, обед не считается. Пустой конец — часы идут дальше.',
+            tasks_segmentsApply: 'Сохранить отрезки',
+            tasks_segmentsError: 'Отрезки не сохранены: проверьте запись и что они не пересекаются.',
             multicolorMode: 'Разноцветные отделы', tabColors: 'Цвета отделов:'
         }
     };
@@ -1481,6 +1805,9 @@ const SCRIPT_LOGS_ENABLED = false;
      */
     const DEFAULT_SESSION_CONFIG = {
         shiftType: null, shiftCalculatedStartTime: null, selectedLunchIndex: null, activeTabInstances: {},
+        // Chwila ostatniego przybitego pojemnika (linia 9). Żyje jedną zmianę,
+        // razem z resztą sessionConfig.
+        lastToteAt: null,
     };
 
     const baseState = {
@@ -2380,7 +2707,7 @@ const SCRIPT_LOGS_ENABLED = false;
     // tworzy elementy, a CSSManager i panel ustawień chodzą po linesConfig.
     const LINE_KEYS = ['line1_currentTab', 'line2_globalSummary', 'line3_shiftInfo',
                        'line4_lunchInfo', 'line5_realTimeClock', 'line6_valueSum',
-                       'line7_compact', 'line8_taskInfo'];
+                       'line10_target', 'line9_offTask', 'line7_compact', 'line8_taskInfo'];
 
     // ─── src/10-ui-window.js ───
     const StatsWindowRenderer = {
@@ -2525,6 +2852,69 @@ const SCRIPT_LOGS_ENABLED = false;
          * domyślnej ma się pojawić, a nie zniknąć po cichu. Zmiana `visible`
          * przerysowuje okno od razu (subskrypcja localTabConfig).
          */
+        /**
+         * LINIA 9 — czas od ostatniego przybitego pojemnika. Po przekroczeniu
+         * podwójnego czasu przedmiotu linia jest czerwona i dopisuje narosłą
+         * bezczynność. Kolor nadpisuje się w stylu elementu; zdjęcie nadpisania
+         * wraca do koloru z ustawień linii.
+         */
+        renderOffTask() {
+            const line = this.lines.line9_offTask;
+            const t = ToteWatch.offTask(Date.now());
+            if (!t) {
+                line.textContent = '';
+                line.style.color = '';
+                return;
+            }
+            line.textContent = Utils.formatDuration(t.elapsedMs)
+                + (t.overMs > 0 ? ` +${Utils.formatDuration(t.overMs)}` : '');
+            line.style.color = t.overMs > 0 ? CONFIG.OFF_TASK_COLOR : '';
+        },
+
+        /**
+         * LINIA 7 — wszystko, czego człowiek potrzebuje w trakcie pracy:
+         *
+         *     34.3 z 47 · 236 z 470 · 14% · 2m 41s
+         *
+         *   - tempo BIEŻĄCEGO zadania z celu działu — zadania istnieją właśnie
+         *     po to, żeby procesy o różnych normach nie mieszały się w jedną
+         *     średnią; tempo całej zmiany jest w panelu i w linii 1;
+         *   - paczki zmiany (wszystkie wliczane karty) z celu zmiany
+         *     (cel × płatne godziny);
+         *   - procent sprzedaży zmiany;
+         *   - czas od ostatniego pojemnika, czerwony po przekroczeniu limitu
+         *     (jak linia 9); do pierwszego pojemnika go nie ma.
+         * Bez celu działu znika „z …”. Spójnik („z”, „of” i odpowiedniki
+         * ukraiński i rosyjski) idzie ze słownika (statsOf).
+         */
+        renderCompact(gTotal, gSold, gRated) {
+            const line = this.lines.line7_compact;
+            const task = TaskManager.active() || store.tasks[store.tasks.length - 1];
+            const target = ToteWatch.targetFor(store.currentTabType);
+            const of = I18n.get('statsOf');
+            const rate = (task ? TaskManager.rate(task) : 0).toFixed(1);
+            const parts = [
+                target ? `${rate} ${of} ${target}` : rate,
+                target ? `${gTotal} ${of} ${Math.round(target * CONFIG.PAID_SHIFT_HOURS)}` : String(gTotal),
+                `${Utils.percentFloor(gSold, gRated)}%`,
+            ];
+            line.innerHTML = '';
+            line.appendChild(document.createTextNode(parts.join(' · ')));
+            const t = ToteWatch.offTask(Date.now());
+            if (!t) return;
+            line.appendChild(document.createTextNode(' · '));
+            line.appendChild(h('span', {
+                textContent: Utils.formatDuration(t.elapsedMs),
+                style: { color: t.overMs > 0 ? CONFIG.OFF_TASK_COLOR : '' },
+            }));
+        },
+
+        /** Skrót „ukryj okno”: chowa okno statystyk do następnego naciśnięcia. */
+        toggleHidden() {
+            this.hidden = !this.hidden;
+            this.el.style.display = this.hidden ? 'none' : '';
+        },
+
         isLineVisible(key) {
             const cfg = store.localTabConfig.linesConfig[key];
             return !cfg || cfg.visible !== false;
@@ -2661,17 +3051,7 @@ const SCRIPT_LOGS_ENABLED = false;
             if (this.isLineVisible('line6_valueSum')) this.renderValueSum();
             else this.lines.line6_valueSum.innerHTML = '';
 
-            /**
-             * LINIA 7 — trzy liczby bez jednostek i nazw:
-             *
-             *     17.4 28 14%
-             *
-             * tempo (paczki na godzinę, wszystkie wliczane karty), liczba
-             * zrobionych sztuk i procent sprzedaży — te same, które stoją na
-             * końcu linii 2, z tego samego przebiegu pętli.
-             */
-            this.lines.line7_compact.textContent =
-                `${getIph(gTotal)} ${gTotal} ${Utils.percentFloor(gSold, gRated)}%`;
+            this.renderCompact(gTotal, gSold, gRated);
 
             /**
              * LINIA 8 — bieżące zadanie i jego własne liczby, z własnym
@@ -2682,6 +3062,24 @@ const SCRIPT_LOGS_ENABLED = false;
              * Zatrzymane zadanie dostaje na końcu znak pauzy — inaczej stojące
              * tempo wyglądałoby jak zepsuty licznik.
              */
+            this.renderOffTask();
+
+            /**
+             * LINIA 10 — cel działu z RATE_TARGETS: cel, procent bieżącego
+             * tempa zmiany od celu i sztuki wobec celu zmiany (cel × płatne
+             * godziny, bez niepłatnego obiadu):
+             *
+             *     47/h 85% 236/470
+             */
+            const target = ToteWatch.targetFor(store.currentTabType);
+            if (!target) {
+                this.lines.line10_target.textContent = '';
+            } else {
+                const pct = workedMs >= CONFIG.RATE_MIN_WORKED_MS ? Math.floor(gTotal / hWorked / target * 100) : 0;
+                this.lines.line10_target.textContent =
+                    `${target}${I18n.get('statsPerHourUnit')} ${pct}% ${gTotal}/${Math.round(target * CONFIG.PAID_SHIFT_HOURS)}`;
+            }
+
             const task = TaskManager.active();
             if (!task) {
                 this.lines.line8_taskInfo.textContent = '';
@@ -2806,11 +3204,50 @@ const SCRIPT_LOGS_ENABLED = false;
                 this.render();
                 this.el.style.display = 'block';
                 setTimeout(() => this.el.style.transform = 'translateX(0)', 10);
+                this.captureInput(true);
             } else {
+                this.captureInput(false);
                 this.el.style.transform = 'translateX(110%)';
                 Persistence.saveState();
                 setTimeout(() => this.el.style.display = 'none', 200);
             }
+        },
+
+        /**
+         * Panel otwarty przejmuje klawiaturę i klik poza nim.
+         *
+         * KLAWIATURA. T-REX łapie klawisze na całej stronie (cyfry wybierają
+         * przyciski kroku), więc bez tego cyfry wpisywane w pole panelu
+         * przepadają. Słuchacz na `window` w fazie przechwytywania biegnie
+         * przed słuchaczami dokumentu i elementów strony; dla zdarzeń
+         * z wnętrza panelu zatrzymuje dalszą drogę. Domyślne działanie
+         * klawisza (wpisanie znaku) zostaje, a pola panelu słuchają `input`
+         * i `change`, których to nie dotyczy. Hasła dalej zamykają panel:
+         * poza polem tekstowym zdarzenie idzie wprost do InputManager.
+         * Po zamknięciu słuchacze znikają i strona dostaje klawisze jak
+         * wcześniej.
+         *
+         * KLIK POZA PANELEM zamyka go — z wyjątkiem trybu przeciągania okna
+         * albo karty ceny: wtedy klik poza panelem to właśnie przeciąganie.
+         */
+        captureInput(on) {
+            if (!this.onPanelKey) {
+                this.onPanelKey = (e) => {
+                    if (!this.el.contains(e.target)) return;
+                    e.stopImmediatePropagation();
+                    const t = e.target;
+                    const editable = ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable;
+                    if (e.type === 'keydown' && !editable) InputManager.onKeyDown(e);
+                };
+                this.onOutsideDown = (e) => {
+                    if (this.el.contains(e.target)) return;
+                    if (store.uiFlags.isStatsWindowDragging || store.uiFlags.isPriceCardDragging) return;
+                    this.toggle();
+                };
+            }
+            const method = on ? 'addEventListener' : 'removeEventListener';
+            ['keydown', 'keyup', 'keypress'].forEach(t => window[method](t, this.onPanelKey, true));
+            document[method]('mousedown', this.onOutsideDown, true);
         },
         /**
          * SEKCJA ZADAŃ — jedyna część panelu otwierana w trakcie pracy, więc
@@ -2864,6 +3301,18 @@ const SCRIPT_LOGS_ENABLED = false;
                     },
                     style: { width: '70px', padding: '4px', textAlign: 'center' },
                 })));
+
+                // --- odcinki: kilka powrotów do procesu w ciągu zmiany ---
+                const segBox = h('input', {
+                    type: 'text', value: TaskManager.formatSegments(task), spellcheck: false,
+                    style: { flexGrow: '1', padding: '4px', fontFamily: 'monospace' },
+                });
+                sec.appendChild(UIBuilder.row(I18n.get('tasks_segments'), segBox));
+                sec.appendChild(UIBuilder.hint(I18n.get('tasks_segmentsHint')));
+                sec.appendChild(UIBuilder.button(I18n.get('tasks_segmentsApply'), () => {
+                    if (!TaskManager.setSegments(task.id, segBox.value)) Notifier.show(I18n.get('tasks_segmentsError'));
+                    this.rerender();
+                }, { width: '100%', marginTop: '4px' }));
 
                 // --- paczki i tempo: dwa pola opisujące to samo ---
                 // Wpisuje się jedno, drugie przelicza się samo. Po wpisaniu
@@ -2975,6 +3424,37 @@ const SCRIPT_LOGS_ENABLED = false;
          * LICZNIKI DZIAŁÓW — obok zadań, bo wpisanie liczby wprost („zrobiłem
          * dziś 180”) to sposób na powrót do pracy po awarii maszyny.
          */
+        /**
+         * CEL I POMOCE STANOWISKA: cel karty CRET (CRET albo FAST), liczenie
+         * po pojemniku, Auto-LPN i most GRAVIS. Wszystko domyślnie wyłączone;
+         * GRAVIS pokazuje się tylko na kartach, które go potrzebują — w REFURB
+         * i WHD ASIN jest przypięty do LPN w samym programie.
+         */
+        buildWorkflowSection() {
+            const sec = UIBuilder.section(I18n.get('section_workflow'));
+            if (store.currentTabType === 'CRET') {
+                sec.appendChild(UIBuilder.row(I18n.get('workflow_cretProfile'), UIBuilder.select(
+                    ['CRET', 'FAST'].map(k => ({ value: k, text: `${k} (${CONFIG.RATE_TARGETS[k] || 0}/h)` })),
+                    store.userConfig.cretProfile, v => { store.userConfig.cretProfile = v; })));
+            }
+            sec.appendChild(UIBuilder.hint(I18n.get('workflow_targetHint', { value: ToteWatch.targetFor(store.currentTabType) || '—' })));
+            sec.appendChild(UIBuilder.row('', UIBuilder.checkbox(I18n.get('workflow_toteCounting'), !!store.userConfig.toteCounting,
+                v => { store.userConfig.toteCounting = !!v; })));
+            sec.appendChild(UIBuilder.hint(I18n.get('workflow_toteCountingHint')));
+            sec.appendChild(UIBuilder.row('', UIBuilder.checkbox(I18n.get('workflow_autoLpn'), !!store.userConfig.autoLpn,
+                v => { store.userConfig.autoLpn = !!v; })));
+            if (CONFIG.GRAVIS_TAB_TYPES.includes(store.currentTabType)) {
+                sec.appendChild(UIBuilder.row('', UIBuilder.checkbox(I18n.get('workflow_gravis'), !!store.userConfig.gravisAsin,
+                    v => { store.userConfig.gravisAsin = !!v; if (!v) GravisBridge.close(); this.rerender(); })));
+                if (store.userConfig.gravisAsin) {
+                    sec.appendChild(UIBuilder.hint(I18n.get('workflow_gravisHowTo')));
+                    sec.appendChild(UIBuilder.button(I18n.get(GravisBridge.connected() ? 'workflow_gravisConnected' : 'workflow_gravisOpen'),
+                        () => { GravisBridge.open(); this.rerender(); }, { width: '100%' }));
+                }
+            }
+            return sec;
+        },
+
         buildCountersSection() {
             const sec = UIBuilder.section(I18n.get('section_globalStats'));
             Object.values(CONFIG.KNOWN_TAB_TYPES).forEach(t => {
@@ -3090,6 +3570,9 @@ const SCRIPT_LOGS_ENABLED = false;
                 }
                 // Linia 8 opisuje zadanie, a nie zmianę — bez tego zdania wygląda
                 // jak powtórzenie linii 1 z innymi liczbami.
+                if (lineKey === 'line9_offTask') {
+                    lineBox.appendChild(UIBuilder.hint(I18n.get('lineSettings_offTaskHint')));
+                }
                 if (lineKey === 'line8_taskInfo') {
                     lineBox.appendChild(UIBuilder.hint(I18n.get('lineSettings_taskInfoHint')));
                 }
@@ -3155,7 +3638,9 @@ const SCRIPT_LOGS_ENABLED = false;
             const keyOpts = CONFIG.AVAILABLE_SHORTCUT_KEYS.map(k => ({ value: k.code, text: I18n.get(k.name_key) }));
             secKeys.appendChild(UIBuilder.row(I18n.get('incrementKey'), UIBuilder.select(keyOpts, store.userConfig.keyboardShortcuts.INCREMENT, v => store.userConfig.keyboardShortcuts.INCREMENT = v)));
             secKeys.appendChild(UIBuilder.row(I18n.get('decrementKey'), UIBuilder.select(keyOpts, store.userConfig.keyboardShortcuts.DECREMENT, v => store.userConfig.keyboardShortcuts.DECREMENT = v)));
+            secKeys.appendChild(UIBuilder.row(I18n.get('toggleWindowKey'), UIBuilder.select(keyOpts, store.userConfig.keyboardShortcuts.TOGGLE_WINDOW, v => store.userConfig.keyboardShortcuts.TOGGLE_WINDOW = v)));
             this.el.appendChild(secKeys);
+            this.el.appendChild(this.buildWorkflowSection());
 
             // 7. Autoinkrementacja
             const secAuto = UIBuilder.section(I18n.get('section_autoIncrement'));
@@ -5092,6 +5577,24 @@ const SCRIPT_LOGS_ENABLED = false;
             this.apply();
         },
 
+        /**
+         * Naklejka w UG: przedmiot idzie na sprzedaż jako przeceniony, zanim
+         * pojawi się kod sortowania. Rozstrzyga też wiszący Secondary-Sorting.
+         * Waga 2 — tyle sztuk dodaje licznik, tyle samo sprzedanych.
+         */
+        onSticker() {
+            if (!this.state) this.startItem('naklejka przed początkiem');
+            const st = this.state;
+            st.weight = CONFIG.STICKER_ITEM_WEIGHT;
+            if (st.direction && !st.pending) return;
+            st.pending = false;
+            st.direction = 'sell';
+            st.code = st.code || 'naklejka';
+            if (this._ambiguous === st) this._ambiguous = null;
+            Utils.log('[KIERUNEK] naklejka -> SPRZEDAŻ');
+            this.apply();
+        },
+
         /** Nazwa kierunku do dziennika w konsoli. */
         directionName(dir) {
             return dir === 'sell' ? 'SPRZEDAŻ'
@@ -5154,12 +5657,14 @@ const SCRIPT_LOGS_ENABLED = false;
             // bieżącego zadania (linia 8) w jednym wywołaniu, żeby suma zadań
             // nie rozjechała się z licznikiem karty. +1 od wartości
             // w magazynie — dwie karty działu dzielą klucz (freshCount).
-            if (st.direction === 'sell') {
-                Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_SOLD, store.tabSold, cid);
-                TaskManager.addSold(cid);
-            } else if (st.direction === 'neutral') {
-                Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL, store.tabNeutral, cid);
-                TaskManager.addNeutral(cid);
+            for (let i = 0; i < (st.weight || 1); i++) {
+                if (st.direction === 'sell') {
+                    Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_SOLD, store.tabSold, cid);
+                    TaskManager.addSold(cid);
+                } else if (st.direction === 'neutral') {
+                    Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL, store.tabNeutral, cid);
+                    TaskManager.addNeutral(cid);
+                }
             }
         },
 
@@ -6167,6 +6672,8 @@ const SCRIPT_LOGS_ENABLED = false;
                     this.modifyCounter(1, { manual: true }); e.preventDefault();
                 } else if (store.userConfig.keyboardShortcuts.DECREMENT !== 'None' && e.code === store.userConfig.keyboardShortcuts.DECREMENT) {
                     this.modifyCounter(-1, { manual: true }); e.preventDefault();
+                } else if (store.userConfig.keyboardShortcuts.TOGGLE_WINDOW !== 'None' && e.code === store.userConfig.keyboardShortcuts.TOGGLE_WINDOW) {
+                    StatsWindowRenderer.toggleHidden(); e.preventDefault();
                 }
 
                 /**
@@ -6238,6 +6745,14 @@ const SCRIPT_LOGS_ENABLED = false;
 
     const AutoTrigger = {
         observer: null,
+        /** Przedmioty zaliczone z wyzwalacza tekstu — porównanie z ToteWatch. */
+        textCompleted: 0,
+        /**
+         * Naklejka zobaczona przy bieżącym przedmiocie (tylko UG). Zwykłe pole,
+         * a nie uiFlags: zapis do stanu reaktywnego przy każdym skanie
+         * rozsyłałby zdarzenia na darmo.
+         */
+        stickerSeen: false,
         debouncedScan: null,
         debouncedAttach: null,
 
@@ -6288,24 +6803,53 @@ const SCRIPT_LOGS_ENABLED = false;
             // razu przy tworzeniu wpisu.
             Routing.observe(txt);
 
-            if (CONFIG.PRE_TRIGGER_REGEX.test(txt)) store.uiFlags.itemInProgress = true;
+            if (CONFIG.PRE_TRIGGER_REGEX.test(txt)) {
+                if (!store.uiFlags.itemInProgress) this.stickerSeen = false;
+                store.uiFlags.itemInProgress = true;
+            }
+            // Naklejka w UG: przedmiot liczy się podwójnie i jest sprzedażą.
+            // Liczy się tylko widoczna — strona potrafi przysłać następny krok
+            // z wyprzedzeniem, ukryty. Wymiary czyta się po innerText, więc
+            // układ strony jest już policzony i odczyt niczego nie przelicza.
+            if (!this.stickerSeen && store.currentTabType === CONFIG.STICKER_TAB_TYPE) {
+                const sticker = document.getElementById(CONFIG.STICKER_ELEMENT_ID);
+                if (sticker && (sticker.offsetWidth || sticker.offsetHeight)) {
+                    this.stickerSeen = true;
+                    Routing.onSticker();
+                }
+            }
+            const toteDone = ToteWatch.check();
+            const byTote = !!store.userConfig.toteCounting;
             if (CONFIG.AUTO_TRIGGER_REGEX.test(txt)) {
                 if (store.uiFlags.itemInProgress && !store.uiFlags.autoTriggerFound) {
-                    InputManager.modifyCounter(1);
+                    this.textCompleted++;
                     store.uiFlags.autoTriggerFound = true;
-                    store.uiFlags.itemInProgress = false;
-                    // Przedmiot przeszedł pełną ścieżkę — zdarzenie dla dziennika
-                    // idzie stąd, a nie z modifyCounter(), bo skróty i ręczne
-                    // poprawki dziennika nie napełniają.
-                    bus.emit('item:completed');
+                    if (!byTote) this.completeItem();
                 }
             } else {
                 store.uiFlags.autoTriggerFound = false;
             }
+            // Jeden pojemnik na przedmiot: zaliczenie zdejmuje flagę, więc
+            // kolejne skany w to samo pole nic nie dodają, dopóki nie przyjdzie
+            // następny wyzwalacz początku.
+            if (byTote && toteDone && store.uiFlags.itemInProgress) this.completeItem();
             // Karta ceny korzysta z tego skanu zamiast własnego obserwatora
             // i drugiego odczytu document.innerText.
             bus.emit('page:scanned', { text: txt });
             Perf.scan(performance.now() - startedAt);
+        },
+
+        /**
+         * Zaliczenie przedmiotu: +1, a z naklejką w UG +2. Zdarzenie dla
+         * dziennika idzie stąd, a nie z modifyCounter(), bo skróty i ręczne
+         * poprawki dziennika nie napełniają.
+         */
+        completeItem() {
+            const weight = this.stickerSeen ? CONFIG.STICKER_ITEM_WEIGHT : 1;
+            for (let i = 0; i < weight; i++) InputManager.modifyCounter(1);
+            store.uiFlags.itemInProgress = false;
+            this.stickerSeen = false;
+            bus.emit('item:completed', { weight });
         }
     };
 
@@ -6396,6 +6940,11 @@ const SCRIPT_LOGS_ENABLED = false;
             if (StatsWindowRenderer.tickTimer) { clearInterval(StatsWindowRenderer.tickTimer); StatsWindowRenderer.tickTimer = null; }
             if (this.shiftWatchTimer) { clearInterval(this.shiftWatchTimer); this.shiftWatchTimer = null; }
             if (InputManager.onKeyDown) document.removeEventListener('keydown', InputManager.onKeyDown, true);
+            if (ToteWatch.onKeyDown) document.removeEventListener('keydown', ToteWatch.onKeyDown, true);
+            if (AutoLpn.onInput) document.removeEventListener('input', AutoLpn.onInput, true);
+            if (GravisBridge.onKeyDown) document.removeEventListener('keydown', GravisBridge.onKeyDown, true);
+            if (GravisBridge.onMessage) window.removeEventListener('message', GravisBridge.onMessage);
+            if (SettingsPanel.onPanelKey) SettingsPanel.captureInput(false);
             if (Persistence.onStorage) window.removeEventListener('storage', Persistence.onStorage);
             if (PriceCard.onCspViolation) document.removeEventListener('securitypolicyviolation', PriceCard.onCspViolation);
             if (this.onPageHide) { window.removeEventListener('pagehide', this.onPageHide); this.onPageHide = null; }
@@ -6431,6 +6980,9 @@ const SCRIPT_LOGS_ENABLED = false;
         },
 
         init() {
+            // Na karcie GRAVIS skrypt nie liczy niczego — jest tylko drugą
+            // stroną mostu (GravisBridge).
+            if (GravisBridge.isGravisPage()) { GravisBridge.initRemote(); return; }
             if (window[CONFIG.SCRIPT_ID_PREFIX + 'INIT']) {
                 /**
                  * Skrypt już działa, ale kod ustawień z zakładki i tak wchodzi —
@@ -6442,10 +6994,17 @@ const SCRIPT_LOGS_ENABLED = false;
                  */
                 const bootCode = ConfigCode.takeBoot();
                 const running = window[CONFIG.SCRIPT_ID_PREFIX + 'API'];
+                /**
+                 * Bez kodu ustawień powtórne kliknięcie zakładki otwiera albo
+                 * zamyka panel — tak samo jak hasło, bez stałego przycisku na
+                 * ekranie.
+                 */
                 if (bootCode && running && typeof running.config === 'function') {
                     running.config(bootCode);
+                } else if (running && typeof running.settings === 'function') {
+                    running.settings();
                 }
-                Utils.log('Skrypt już działa na tej stronie — powtórne wklejenie zignorowane. Aby zrestartować, przeładuj stronę (F5).');
+                Utils.log('Skrypt już działa na tej stronie — powtórne uruchomienie przełącza panel ustawień. Aby zrestartować, przeładuj stronę (F5).');
                 return;
             }
             window[CONFIG.SCRIPT_ID_PREFIX + 'INIT'] = true;
@@ -6501,6 +7060,9 @@ const SCRIPT_LOGS_ENABLED = false;
                 PriceCardDrag.init();
                 Notifier.init();
                 InputManager.init();
+                ToteWatch.init();
+                AutoLpn.init();
+                GravisBridge.init();
                 AutoTrigger.init();
                 Persistence.listen();
 
@@ -6564,6 +7126,7 @@ const SCRIPT_LOGS_ENABLED = false;
 
                 this.startShiftWatch();
                 StatsWindowRenderer.renderContent();
+                if (CONFIG.OPEN_SETTINGS_ON_START && !store.uiFlags.isSettingsPanelVisible) SettingsPanel.toggle();
 
                 // Dostęp do wnętrza z konsoli. Skrypt uruchamia się właśnie przez
                 // F12, więc możliwość obejrzenia stanu i wywołania metody w locie
@@ -6573,7 +7136,7 @@ const SCRIPT_LOGS_ENABLED = false;
                     Persistence, SettingsPanel, AutoTrigger, I18n,
                     KeepaOCR, PriceSources, PriceNet, ValueLog, FxRates, Routing,
                     // Potrzebne testom i diagnostyce.
-                    Utils, PriceModule, StatsWindowRenderer, CSSManager, LINE_KEYS,
+                    Utils, PriceModule, StatsWindowRenderer, CSSManager, LINE_KEYS, LANG_STRINGS,
                     DEFAULT_LINE_CONFIG, DEFAULT_LOCAL_CONFIG, DEFAULT_USER_CONFIG,
                     priceModuleOn,
                     // Hasła dostępu: SH.normalizeAccessPasswords(['moje', 'hasła'])
@@ -6599,6 +7162,11 @@ const SCRIPT_LOGS_ENABLED = false;
                      * zmiany kosztuje tyle co na początku. Sam nic nie wypisuje.
                      */
                     perf: () => Perf.report(),
+                    // Panel ustawień: to samo co hasło i powtórne kliknięcie zakładki.
+                    settings: () => SettingsPanel.toggle(),
+                    // Porównanie liczenia po pojemniku z wyzwalaczem tekstu.
+                    tote: () => ToteWatch.info(),
+                    ToteWatch, AutoLpn, GravisBridge,
                     Perf,
                     // Przeciąganie okna i karty — wystawione dla diagnostyki
                     // („czemu nie da się przesunąć okna”) i dla testów, które
@@ -6793,9 +7361,10 @@ const SCRIPT_LOGS_ENABLED = false;
             font: ['default', 'monospace', 'sans_serif_thin'],
             source: ['ocr', 'graph', 'jina'],
             graphMode: ['legend', 'right', 'full'],
-            language: ['pl', 'en', 'ru'],
+            language: ['pl', 'en', 'ru', 'uk'],
             marketplace: ['de', 'co.uk', 'com', 'it', 'fr', 'es', 'nl', 'ca', 'se', 'com.be', 'pl'],
             displayCurrency: ['native', 'EUR', 'PLN', 'GBP', 'SEK', 'USD', 'CAD'],
+            cretProfile: ['CRET', 'FAST'],
         },
 
         /**
@@ -6844,11 +7413,12 @@ const SCRIPT_LOGS_ENABLED = false;
             { id: 0x0007, root: 'local', path: 'pageOverlayOpacity', type: 'u8', min: 0, max: 100 },
             { id: 0x0008, root: 'local', path: 'pageIndicatorTextVisible', type: 'bool' },
 
-            // --- linie 1–8 ---
+            // --- linie 1–10 ---
             ...['line1_currentTab', 'line2_globalSummary', 'line3_shiftInfo', 'line4_lunchInfo',
                 'line5_realTimeClock', 'line6_valueSum', 'line7_compact',
-                // Linia 8 — blok 0x0170, kolejny po linii 7.
-                'line8_taskInfo'].flatMap((key, i) => {
+                // Linia 8 — blok 0x0170, kolejny po linii 7; linie 9 i 10 —
+                // 0x0180 i 0x0190.
+                'line8_taskInfo', 'line9_offTask', 'line10_target'].flatMap((key, i) => {
                 const base = 0x0100 + i * 0x10;
                 return [
                     { id: base, root: 'local', path: `linesConfig.${key}.visible`, type: 'bool' },
@@ -6866,6 +7436,7 @@ const SCRIPT_LOGS_ENABLED = false;
             // Dział ręczny OTHER — numery dotąd niewydane, więc starsze kody
             // nie zmieniają znaczenia.
             { id: 0x0118, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.OTHER', type: 'color' },
+            { id: 0x0119, root: 'local', path: 'linesConfig.line2_globalSummary.customColors.UG', type: 'color' },
 
             // --- karta ceny ---
             // 0x0200 i 0x0202 są wycofane — patrz RETIRED_IDS.
@@ -6902,6 +7473,12 @@ const SCRIPT_LOGS_ENABLED = false;
             { id: 0x0307, root: 'user', path: 'keyboardShortcuts.INCREMENT', type: 'text' },
             { id: 0x0308, root: 'user', path: 'keyboardShortcuts.DECREMENT', type: 'text' },
             { id: 0x030a, root: 'user', path: 'displayCurrency', type: 'enum', list: 'displayCurrency' },
+            { id: 0x030b, root: 'user', path: 'globalStatsContributionKnown.UG', type: 'bool' },
+            { id: 0x030c, root: 'user', path: 'keyboardShortcuts.TOGGLE_WINDOW', type: 'text' },
+            { id: 0x030d, root: 'user', path: 'cretProfile', type: 'enum', list: 'cretProfile' },
+            { id: 0x030e, root: 'user', path: 'toteCounting', type: 'bool' },
+            { id: 0x030f, root: 'user', path: 'autoLpn', type: 'bool' },
+            { id: 0x0310, root: 'user', path: 'gravisAsin', type: 'bool' },
         ],
 
         // ---------------- pomocnicze ----------------
@@ -7486,6 +8063,72 @@ const SCRIPT_LOGS_ENABLED = false;
             return end;
         },
 
+        /**
+         * Odcinki wpisane ręcznie: „06:30-09:15, 12:00-14:10, 23:30-02:00”.
+         *
+         * Godzina oznacza najbliższe jej wystąpienie od godziny przed początkiem
+         * zmiany, więc w zmianie nocnej „02:00” to noc po północy, a nie ranek
+         * przed zmianą. Koniec nie późniejszy niż początek przechodzi na
+         * następną dobę (23:30-02:00). Pusty koniec ostatniego odcinka — zegar
+         * chodzi dalej; wolno to tylko zadaniu aktywnemu. Obiad odejmuje
+         * workedMs, jak przy każdym odcinku.
+         *
+         * Odrzucane (null): zły zapis, odcinek w przyszłości, odcinki
+         * nachodzące na siebie albo na odcinki innych zadań — ten sam czas
+         * liczyłby się dwa razy.
+         *
+         * @returns {{from: number, to: number|null}[]|null}
+         */
+        parseSegments(id, text, nowMs) {
+            const now = Number(nowMs) || Date.now();
+            const anchor = (Number(store.sessionConfig.shiftCalculatedStartTime) || now) - 3600000;
+            const at = (h, m, notBefore) => {
+                const d = new Date(notBefore);
+                d.setHours(h, m, 0, 0);
+                if (d.getTime() < notBefore) d.setDate(d.getDate() + 1);
+                return d.getTime();
+            };
+            const items = String(text == null ? '' : text).split(',').map(s => s.trim()).filter(Boolean);
+            if (!items.length) return null;
+            const out = [];
+            for (let i = 0; i < items.length; i++) {
+                const m = /^(\d{1,2})[:.](\d{2})\s*-\s*(?:(\d{1,2})[:.](\d{2}))?$/.exec(items[i]);
+                if (!m || +m[1] > 23 || +m[2] > 59 || (m[3] !== undefined && (+m[3] > 23 || +m[4] > 59))) return null;
+                const from = at(+m[1], +m[2], anchor);
+                const to = m[3] === undefined ? null : at(+m[3], +m[4], from + 60000);
+                if (to === null && (i !== items.length - 1 || store.activeTaskId !== id)) return null;
+                if (from > now || (to !== null && to > now)) return null;
+                out.push({ from, to });
+            }
+            out.sort((a, b) => a.from - b.from);
+            const end = (seg) => (seg.to === null ? now : seg.to);
+            for (let i = 1; i < out.length; i++) if (out[i].from < end(out[i - 1])) return null;
+            for (const other of store.tasks) {
+                if (other.id === id) continue;
+                for (const seg of other.segments) {
+                    if (out.some(o => o.from < end(seg) && seg.from < end(o))) return null;
+                }
+            }
+            return out;
+        },
+
+        /** Zapisuje odcinki z parseSegments. Zwraca false, gdy zapis odrzucono. */
+        setSegments(id, text, nowMs) {
+            const task = this.byId(id);
+            const segments = task ? this.parseSegments(id, text, nowMs) : null;
+            if (!segments) return false;
+            task.segments = segments;
+            this._commit(store.tasks);
+            return true;
+        },
+
+        /** Odcinki zadania w zapisie, który przyjmuje parseSegments. */
+        formatSegments(task) {
+            return task.segments
+                .map(seg => `${Utils.formatClock(seg.from)}-${seg.to === null ? '' : Utils.formatClock(seg.to)}`)
+                .join(', ');
+        },
+
         remove(id) {
             const task = this.byId(id);
             if (!task || store.tasks.length <= 1) return false;
@@ -7859,6 +8502,417 @@ const SCRIPT_LOGS_ENABLED = false;
         },
     };
 
+    // ─── src/26-tote-watch.js ───
+    // ==========================================
+    // 6h. POJEMNIK PRZYBITY
+    // ==========================================
+    /**
+     * Przybicie pojemnika to dwa zdarzenia w tej kolejności:
+     *   1. Enter w polu pojemnika z wartością wyglądającą jak pojemnik;
+     *   2. zniknięcie tego pola ze strony.
+     *
+     * Bez limitu czasu: człowiek potrafi zostawić otwarty krok i odejść na
+     * kilka minut — liczy się dopiero zniknięcie pola. Błędny pojemnik zostawia
+     * pole na miejscu, więc nic się nie zalicza; następny Enter podmienia
+     * oczekujący wpis.
+     *
+     * Sprawdzenie (check) nie ma własnego obserwatora: woła je skan AutoTrigger,
+     * który i tak chodzi po każdej paczce mutacji — zniknięcie pola jest
+     * mutacją. Koszt to jedno przejście w górę drzewa od zapamiętanego pola.
+     */
+    const ToteWatch = {
+        /** @type {{input: any, value: string}|null} */
+        pending: null,
+        /** Przybite pojemniki w tej karcie — do porównania z licznikiem (SH.tote()). */
+        confirmed: 0,
+
+        init() {
+            this.onKeyDown = (e) => {
+                if (e.key !== 'Enter') return;
+                const el = e.target;
+                if (!el || el.tagName !== 'INPUT' || !this.isToteInput(el)) return;
+                const value = String(el.value || '').trim();
+                if (!CONFIG.TOTE_VALUE_REGEX.test(value)) return;
+                this.pending = { input: el, value };
+            };
+            document.addEventListener('keydown', this.onKeyDown, true);
+        },
+
+        isToteInput(el) {
+            if ((el.getAttribute('data-testid') || '').toLowerCase() === CONFIG.TOTE_INPUT_TESTID) return true;
+            const label = (el.getAttribute('aria-label') || '').toLowerCase();
+            return label !== '' && CONFIG.TOTE_INPUT_LABELS.some(l => label.includes(l));
+        },
+
+        /** Czy węzeł wisi jeszcze w dokumencie — bez `isConnected`, którego atrapa nie zna. */
+        attached(el) {
+            for (let n = el; n; n = n.parentElement) if (n === document.body) return true;
+            return false;
+        },
+
+        /**
+         * Zniknięcie pola po Enterze — zdjętego ze strony albo schowanego
+         * (zerowe wymiary). Zwraca true, gdy pojemnik właśnie przybito.
+         */
+        check() {
+            const p = this.pending;
+            if (!p) return false;
+            if (this.attached(p.input) && (p.input.offsetWidth || p.input.offsetHeight)) return false;
+            this.pending = null;
+            this.confirmed++;
+            store.sessionConfig.lastToteAt = Date.now();
+            bus.emit('tote:confirmed', { value: p.value });
+            return true;
+        },
+
+        /**
+         * Cel działu (sztuk na godzinę) z RATE_TARGETS w nagłówku pliku.
+         * CRET i FAST dzielą kartę, więc o celu karty CRET decyduje panel.
+         * 0 — działu bez celu; spreparowany wpis (tekst, ujemny, NaN) też daje 0.
+         */
+        targetFor(tabType) {
+            const key = tabType === 'CRET' && store.userConfig.cretProfile === 'FAST' ? 'FAST' : tabType;
+            const v = Number(CONFIG.RATE_TARGETS && CONFIG.RATE_TARGETS[key]);
+            return Number.isFinite(v) && v > 0 ? v : 0;
+        },
+
+        /**
+         * Bezczynność od ostatniego pojemnika, bez wybranego obiadu. Czas przedmiotu to 60 / cel
+         * minut; bezczynność zaczyna narastać po dwóch takich czasach.
+         * null — w tej zmianie nie przybito jeszcze pojemnika (albo zapis
+         * jest spreparowany: tekst, przyszłość).
+         * @param {number} now
+         */
+        offTask(now) {
+            const at = Number(store.sessionConfig.lastToteAt);
+            if (!Number.isFinite(at) || at <= 0 || at > now) return null;
+            const target = this.targetFor(store.currentTabType);
+            // Obiad nie jest bezczynnością: jego część w tym odcinku odpada.
+            const elapsedMs = Math.max(0, now - at - ShiftManager.lunchOverlapMs(at, now));
+            const limitMs = target ? 2 * 3600000 / target : 0;
+            const overMs = limitMs && elapsedMs > limitMs ? elapsedMs - limitMs : 0;
+            return { elapsedMs, limitMs, overMs };
+        },
+
+        /** Porównanie obu sposobów liczenia — do sprawdzania na stanowisku. */
+        info() {
+            return {
+                'pojemniki przybite': this.confirmed,
+                'przedmioty z wyzwalacza tekstu': AutoTrigger.textCompleted,
+                'liczenie po pojemniku': !!store.userConfig.toteCounting,
+                'oczekuje na zniknięcie pola': this.pending ? this.pending.value : null,
+            };
+        },
+    };
+
+    // ─── src/27-gravis.js ───
+    // ==========================================
+    // 6i. MOST GRAVIS — ASIN PO LPN
+    // ==========================================
+    /**
+     * Dwie karty, jeden plik. Karta T-REX otwiera GRAVIS przez window.open
+     * i dostaje uchwyt okna; ten sam skrypt kliknięty na karcie GRAVIS
+     * rozpoznaje stronę (isGravisPage) i staje się drugą stroną mostu:
+     * odpowiada przez window.opener. Rozmowa idzie przez postMessage —
+     * przeglądarka przekazuje wiadomość między oknami bez sieci, a CORS
+     * dotyczy tylko zapytań HTTP.
+     *
+     * Obie strony przyjmują wiadomość wyłącznie od znanego okna (e.source)
+     * i znanego adresu (e.origin) i wysyłają ją wyłącznie na znany adres —
+     * inna karta nie podsunie fałszywego ASIN ani nie podsłucha LPN.
+     *
+     * ASIN pokazuje się pod polem skanu przedmiotu, wyśrodkowany pod nim,
+     * jako link; kliknięcie wstawia go do pola, a Enter naciska człowiek.
+     * Tekst linku jest rozerwany znakiem U+200B: skan strony nie może zobaczyć
+     * w nim ASIN (zmiana ASIN to dla Routing granica przedmiotu). Brak ASIN
+     * albo brak odpowiedzi nie pokazuje niczego.
+     *
+     * Skrypt w GRAVIS co GRAVIS_HEARTBEAT_MS daje znać, że żyje. Dzięki temu
+     * T-REX po własnym przeładowaniu odnajduje okno GRAVIS (przyjmuje je
+     * z pierwszego sygnału ze znanego adresu), a gdy sygnały ustaną — karta
+     * GRAVIS przeładowała się i skrypt zniknął — w miejscu ASIN pojawia się
+     * cicha podpowiedź, żeby kliknąć tam zakładkę jeszcze raz. Dopóki GRAVIS
+     * nie odezwał się ani razu, wygląd T-REX się nie zmienia.
+     */
+    const GravisBridge = {
+        win: null,
+        ready: false,
+        /** Chwila ostatniego sygnału z GRAVIS; 0 — jeszcze żadnego. */
+        lastSeen: 0,
+        lastLpn: null,
+        pendingLpn: null,
+        asin: null,
+        chip: null,
+        lookupToken: 0,
+
+        origin() {
+            const m = String(CONFIG.GRAVIS_URL).match(/^https?:\/\/[^/]+/);
+            return m ? m[0] : '';
+        },
+        isGravisPage() {
+            const loc = window.location;
+            return loc.origin === this.origin() && String(loc.pathname || '').toLowerCase().startsWith('/gravis');
+        },
+        enabled() {
+            return !!store.userConfig.gravisAsin && CONFIG.GRAVIS_TAB_TYPES.includes(store.currentTabType);
+        },
+        connected() {
+            return !!(this.win && !this.win.closed && this.ready);
+        },
+
+        // --- strona T-REX ---
+        init() {
+            this.onKeyDown = (e) => {
+                if (e.key !== 'Enter' || !this.enabled()) return;
+                const el = e.target;
+                if (!el || el.tagName !== 'INPUT') return;
+                const tid = (el.getAttribute('data-testid') || '').toLowerCase();
+                if (!CONFIG.LPN_INPUT_TESTIDS.includes(tid)) return;
+                const lpn = String(el.value || '').trim();
+                if (CONFIG.LPN_VALUE_REGEX.test(lpn)) this.send(lpn);
+            };
+            this.onMessage = (e) => {
+                if (!this.enabled() || e.origin !== this.origin() || !e.source) return;
+                const d = e.data;
+                if (!d || typeof d !== 'object') return;
+                // Okno przyjmuje się z sygnału gotowości ze znanego adresu —
+                // także po przeładowaniu T-REX, gdy uchwytu z window.open już nie ma.
+                if (d.type === 'sh-gravis-ready') {
+                    this.win = /** @type {Window} */ (e.source);
+                    const wasStale = !this.ready || this.stale();
+                    this.ready = true;
+                    this.lastSeen = Date.now();
+                    if (this.pendingLpn) this.send(this.pendingLpn);
+                    if (wasStale) this.place();
+                    return;
+                }
+                if (e.source !== this.win) return;
+                this.lastSeen = Date.now();
+                if (d.type === 'sh-gravis-asin' && d.lpn === this.lastLpn) {
+                    this.asin = typeof d.asin === 'string' && CONFIG.ASIN_VALUE_REGEX.test(d.asin) ? d.asin : null;
+                    this.place();
+                }
+            };
+            document.addEventListener('keydown', this.onKeyDown, true);
+            window.addEventListener('message', this.onMessage);
+            bus.on('page:scanned', () => this.place());
+        },
+        /** Jedyne miejsce, z którego T-REX otwiera GRAVIS — kliknięcie w panelu. */
+        open() {
+            if (!this.enabled()) return;
+            this.ready = false;
+            this.win = window.open(CONFIG.GRAVIS_URL, CONFIG.GRAVIS_WINDOW_NAME);
+        },
+        /** Wyłączenie mostu. Karty GRAVIS nie zamykamy — mogła być potrzebna sama w sobie. */
+        close() {
+            this.ready = false;
+            this.lastSeen = 0;
+            this.win = null;
+            this.lastLpn = this.pendingLpn = this.asin = null;
+            this.removeChip();
+        },
+        send(lpn) {
+            this.lastLpn = lpn;
+            this.asin = null;
+            this.removeChip();
+            if (!this.win || this.win.closed) return;
+            if (!this.ready) { this.pendingLpn = lpn; return; }
+            this.pendingLpn = null;
+            this.win.postMessage({ type: 'sh-gravis-lpn', lpn }, this.origin());
+        },
+        findScanInput() {
+            return /** @type {HTMLInputElement|null} */ (document.querySelector(`input[data-testid="${CONFIG.ITEM_SCAN_INPUT_TESTID}"]`));
+        },
+        removeChip() {
+            if (this.chip) this.chip.remove();
+            this.chip = null;
+        },
+        /**
+         * Link z ASIN pod polem skanu. Woła się z każdego skanu strony, ale
+         * zapytanie o pole idzie tylko wtedy, gdy jest ASIN do pokazania.
+         */
+        /** GRAVIS odzywał się wcześniej, a teraz milczy dłużej niż GRAVIS_STALE_MS. */
+        stale() {
+            return this.lastSeen > 0 && Date.now() - this.lastSeen > CONFIG.GRAVIS_STALE_MS;
+        },
+        /**
+         * Pod polem skanu: link z ASIN, a gdy GRAVIS zamilkł — podpowiedź.
+         * Woła się z każdego skanu strony, ale zapytanie o pole idzie tylko
+         * wtedy, gdy jest co pokazać.
+         */
+        place() {
+            const mode = !this.enabled() ? null : this.stale() ? 'hint' : this.asin ? 'asin:' + this.asin : null;
+            if (!mode) { this.removeChip(); return; }
+            const input = this.findScanInput();
+            if (!input) { this.removeChip(); return; }
+            if (this.chip && this.chip.dataset.mode !== mode) this.removeChip();
+            if (!this.chip) {
+                this.chip = mode === 'hint' ? h('div', {
+                    id: 'gravisAsin',
+                    textContent: I18n.get('gravis_restartHint'),
+                    style: { position: 'fixed', zIndex: '2147483645', pointerEvents: 'none',
+                             color: '#9E9E9E', font: '12px sans-serif', transform: 'translateX(-50%)' },
+                }) : this.asinChip(this.asin);
+                this.chip.dataset.mode = mode;
+                document.body.appendChild(this.chip);
+            }
+            // Pola T-REX stoją na środku ekranu i są wąskie — link stoi
+            // wyśrodkowany pod polem, a nie przy jego lewej krawędzi.
+            const r = input.getBoundingClientRect();
+            this.chip.style.left = `${Math.round(r.left + r.width / 2)}px`;
+            this.chip.style.top = `${Math.round(r.top + r.height + 4)}px`;
+        },
+        asinChip(asin) {
+            return h('div', {
+                id: 'gravisAsin',
+                textContent: asin.split('').join('\u200B'),
+                title: 'GRAVIS',
+                onMousedown: (e) => e.preventDefault(),
+                onClick: () => {
+                    const target = this.findScanInput();
+                    if (target) { this.fill(target, asin); target.focus(); }
+                },
+                style: {
+                    position: 'fixed', zIndex: '2147483645', cursor: 'pointer',
+                    color: '#1a73e8', borderBottom: '1px dashed #1a73e8',
+                    font: '13px monospace', background: 'transparent', transform: 'translateX(-50%)',
+                },
+            });
+        },
+
+        /**
+         * Wpisanie wartości tak, żeby zauważył ją framework strony: setter
+         * z prototypu (Angular i React pilnują własnej kopii wartości) i dwa
+         * zdarzenia.
+         */
+        fill(input, value) {
+            const proto = typeof HTMLInputElement !== 'undefined' ? HTMLInputElement.prototype : null;
+            const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+            if (desc && desc.set) desc.set.call(input, value);
+            else input.value = value;
+            ['input', 'change'].forEach(t => {
+                try { input.dispatchEvent(new Event(t, { bubbles: true })); } catch (e) { /* atrapa bez Event */ }
+            });
+        },
+        pressEnter(input) {
+            ['keydown', 'keyup'].forEach(t => {
+                try {
+                    input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                } catch (e) { /* atrapa bez KeyboardEvent */ }
+            });
+        },
+
+        // --- strona GRAVIS ---
+        /**
+         * W GRAVIS skrypt nie liczy i nie ma ustawień: odpowiada tylko na LPN
+         * i co GRAVIS_HEARTBEAT_MS daje znać, że żyje. W lewym górnym rogu
+         * stoi półprzezroczysty znaczek, przezroczysty dla kliknięć.
+         */
+        initRemote() {
+            const flag = CONFIG.SCRIPT_ID_PREFIX + 'GRAVIS';
+            if (window[flag]) return;
+            if (!window.opener) { this.badge(I18n.get('gravis_badgeNoOpener'), '#C62828'); return; }
+            window[flag] = true;
+            this.onRemoteMessage = async (e) => {
+                if (e.source !== window.opener || e.origin !== CONFIG.TREX_ORIGIN) return;
+                const d = e.data;
+                if (!d || d.type !== 'sh-gravis-lpn' || !CONFIG.LPN_VALUE_REGEX.test(String(d.lpn))) return;
+                const asin = await this.lookup(d.lpn);
+                if (asin === undefined || !window.opener) return;
+                window.opener.postMessage({ type: 'sh-gravis-asin', lpn: d.lpn, asin }, CONFIG.TREX_ORIGIN);
+            };
+            window.addEventListener('message', this.onRemoteMessage);
+            const beat = () => {
+                if (window.opener) window.opener.postMessage({ type: 'sh-gravis-ready' }, CONFIG.TREX_ORIGIN);
+            };
+            beat();
+            this.heartbeatTimer = setInterval(beat, CONFIG.GRAVIS_HEARTBEAT_MS);
+            this.badge(I18n.get('gravis_badgeOk'), '#2E7D32');
+        },
+        badge(text, color) {
+            document.body.appendChild(h('div', {
+                id: 'gravisBadge', textContent: text,
+                style: { position: 'fixed', left: '6px', top: '6px', zIndex: '2147483646',
+                         pointerEvents: 'none', opacity: '0.55', background: color, color: '#fff',
+                         padding: '2px 8px', borderRadius: '10px', font: '11px sans-serif' },
+            }));
+        },
+        asinOf(a) {
+            const text = String(a.textContent || '').trim().toUpperCase();
+            if (/^[B0-9][A-Z0-9]{9}$/.test(text)) return text;
+            const m = String(a.href || '').match(/\/(?:dp|product)\/([B0-9][A-Z0-9]{9})/i);
+            return m ? m[1].toUpperCase() : null;
+        },
+        /**
+         * Wyszukanie LPN w GRAVIS i odczyt ASIN z wyniku. Linki z ASIN, które
+         * już stały na stronie, dostają znacznik i są pomijane — inaczej
+         * wynik poprzedniego przedmiotu przyszedłby jako odpowiedź na bieżący.
+         * Zwraca ASIN, null (nie znaleziono) albo undefined (wyszukiwanie
+         * przerwane nowszym LPN — odpowiedź nie jest już potrzebna).
+         */
+        async lookup(lpn) {
+            const token = ++this.lookupToken;
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            const region = /** @type {HTMLElement|null} */ (document.querySelector('.mat-select-value'));
+            if (region && String(region.textContent || '').trim().toUpperCase() !== 'EU') {
+                region.click();
+                await wait(100);
+                const eu = Array.from(document.querySelectorAll('mat-option')).map(o => /** @type {HTMLElement} */ (o))
+                    .find(o => String(o.textContent || '').trim().toUpperCase() === 'EU');
+                if (eu) eu.click();
+            }
+            document.querySelectorAll('a').forEach(a => { if (this.asinOf(a)) a.dataset.shStale = '1'; });
+            const input = document.querySelector('input.mat-input-element');
+            if (!input) return null;
+            this.fill(input, lpn);
+            this.pressEnter(input);
+            const until = Date.now() + CONFIG.GRAVIS_ASIN_TIMEOUT_MS;
+            while (Date.now() < until) {
+                await wait(CONFIG.GRAVIS_POLL_MS);
+                if (token !== this.lookupToken) return undefined;
+                for (const a of document.querySelectorAll('a')) {
+                    if (a.dataset.shStale) continue;
+                    const asin = this.asinOf(a);
+                    if (asin) return asin;
+                }
+            }
+            return null;
+        },
+    };
+
+    // ─── src/28-auto-lpn.js ───
+    // ==========================================
+    // 6j. AUTO-LPN
+    // ==========================================
+    /**
+     * Na kroku pojemnika człowiek skanuje czasem etykietę LPN zamiast
+     * pojemnika — wtedy trzeba wcisnąć „Przypisz ponownie LPN”. Auto-LPN robi
+     * to za niego: o decyzji przesądza pierwszy znak wpisu (t/w/c to
+     * pojemnik, wszystko inne to etykieta), a przerwa po decyzji chroni przed
+     * powtórnym wciśnięciem przy kolejnych znakach tego samego skanu.
+     * Domyślnie wyłączone; słuchacz wychodzi od razu, gdy opcja jest zgaszona.
+     */
+    const AutoLpn = {
+        cooldownUntil: 0,
+        init() {
+            this.onInput = (e) => {
+                if (!store.userConfig.autoLpn) return;
+                const el = e.target;
+                if (!el || el.tagName !== 'INPUT' || !ToteWatch.isToteInput(el)) return;
+                const value = String(el.value || '').trim().toLowerCase();
+                if (!value) return;
+                const now = Date.now();
+                if (now < this.cooldownUntil) return;
+                const btn = /** @type {HTMLButtonElement|null} */ (document.querySelector(`button[data-testid="${CONFIG.REASSIGN_LPN_BUTTON_TESTID}"]`));
+                if (!btn || btn.disabled || btn.offsetParent === null) return;
+                this.cooldownUntil = now + CONFIG.AUTO_LPN_COOLDOWN_MS;
+                if (CONFIG.AUTO_LPN_TOTE_PREFIXES.includes(value[0])) return;
+                btn.click();
+            };
+            document.addEventListener('input', this.onInput, true);
+        },
+    };
+
     // ─── src/25-presets.js ───
 // ==========================================
     // 9. USTAWIENIA PRACOWNIKA (KONFIGURACJA OSOBISTA)
@@ -8017,10 +9071,12 @@ const SCRIPT_LOGS_ENABLED = false;
    line6_valueSum        bilans pieniężny zmiany         domyślnie: OFF, #7CFFA8, 85%, 14px
    line7_compact         trzy liczby: tempo, sztuki, %   domyślnie: ON,  #808080, 50%, 13px
    line8_taskInfo        bieżące zadanie                 domyślnie: OFF, #808080, 60%, 13px
+   line9_offTask         czas od ostatniego pojemnika    domyślnie: OFF, #808080, 50%, 13px
+   line10_target         cel działu i procent celu       domyślnie: OFF, #808080, 60%, 13px
 
    Linia 2 ma dodatkowo:
        multicolor    — true/false, kolorowanie działów osobnymi kolorami
-       customColors  — { CRET: '#0078D7', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
+       customColors  — { CRET: '#0078D7', UG: '#8E44AD', REFURB: '#FFA500', WHD: '#1EB41E', OTHER: '#9E9E9E' }
 
    Linia 6: picker koloru działa tylko na liczbę sztuk. Plus zawsze zielony,
    minus zawsze czerwony — po tym rozpoznaje się znak.
@@ -8067,19 +9123,23 @@ const SCRIPT_LOGS_ENABLED = false;
    -----------------------------------------------------------------------------
    USTAWIENIA WSPÓLNE DLA WSZYSTKICH KART  (store.userConfig)
    -----------------------------------------------------------------------------
-   language    = 'pl'         'pl' | 'en' | 'ru'
+   language    = 'pl'         'pl' | 'uk' | 'ru' | 'en'
    marketplace = 'de'         'de' | 'co.uk' | 'com' | 'it' | 'fr' | 'es' | 'nl'
                               | 'ca' | 'se' | 'com.be' | 'pl'
                               (Keepa nie ma danych dla 'pl' — link zadziała, cena nie)
    displayCurrency = 'EUR'     'native' | 'EUR' | 'PLN' | 'GBP' | 'SEK' | 'USD' | 'CAD'
                               'native' = karta w walucie sklepu, linia 6 w euro;
                               sumy zawsze w euro, to tylko waluta pokazywania
-   globalStatsContributionKnown = { CRET: true, REFURB: true, WHD: true, OTHER: true }
+   globalStatsContributionKnown = { CRET: true, UG: true, REFURB: true, WHD: true, OTHER: true }
                               które działy wliczają się do sumy w liniach 2 i 7
-   keyboardShortcuts = { INCREMENT: 'None', DECREMENT: 'None' }
+   keyboardShortcuts = { INCREMENT: 'None', DECREMENT: 'None', TOGGLE_WINDOW: 'None' }
                               'None' | 'ShiftRight' | 'ControlRight' | 'AltRight'
                               | 'ScrollLock' | 'Pause' | 'Insert' | 'Numpad0'
                               | 'NumpadMultiply' | 'NumpadSubtract' | 'NumpadAdd' | 'F10'
+   cretProfile = 'CRET'        'CRET' | 'FAST' — który cel z RATE_TARGETS obowiązuje na karcie CRET
+   toteCounting = false        doświadczalne: przedmiot zaliczany po przybitym pojemniku
+   autoLpn = false             „Przypisz ponownie LPN”, gdy w pole pojemnika trafi etykieta
+   gravisAsin = true           most GRAVIS: ASIN pod polem skanu (tylko CRET i UG); bez skryptu w GRAVIS nic nie widać
    triggerMutationDebounceMs = 50     50..200, jak często skanować stronę
    settingsPanelWidth        = 450    szerokość panelu ustawień w px
 
@@ -8087,10 +9147,10 @@ const SCRIPT_LOGS_ENABLED = false;
    STAŁE W CONFIG (zmiana wymaga edycji pliku)
    -----------------------------------------------------------------------------
    SCRIPT_VERSION             podstawiany przy budowaniu z package.json
-   SCRIPT_ID_PREFIX = 'statsHelper_v1_5_0_'
-       Prefiks wszystkich kluczy w localStorage. Koduje SCHEMAT danych, a nie
-       numer wydania: zostaje ten sam, dopóki układ zapisywanych pól się
-       nie zmieni. Zmiana prefiksu = start od zera
+   SCRIPT_ID_PREFIX = 'statsHelper_v1_6_0_'
+       Prefiks wszystkich kluczy w localStorage: MAJOR i MINOR wersji.
+       Zmienia się przy każdym wydaniu MINOR i MAJOR, PATCH go nie rusza.
+       Zmiana prefiksu = start od zera
        (stare ustawienia i liczniki przestają być widoczne).
    DEBUG_MODE = false         bierze się z SCRIPT_LOGS_ENABLED z góry pliku;
                               tu jest wartość startowa, SH.logsOn() zmienia ją w locie
