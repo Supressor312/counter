@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StatsHelper (Reactive Architecture Edition)
 // @namespace    statshelper.counter
-// @version      1.7.1
+// @version      1.7.4
 // @description  Stan reaktywny + EventBus + zmienne CSS. Licznik przetworzonych przedmiotów dla TREX.
 // @match        https://trex-prod-eu.aka.amazon.com/*
 // @run-at       document-end
@@ -113,7 +113,7 @@ const PAID_SHIFT_HOURS = 10;
     }
 
     const CONFIG = {
-        SCRIPT_VERSION: '1.7.1',
+        SCRIPT_VERSION: '1.7.4',
         SCRIPT_NAME: 'Helper (Reactive)',
         /**
          * Prefiks kluczy w localStorage. Niesie MAJOR i MINOR wersji
@@ -522,6 +522,9 @@ const PAID_SHIFT_HOURS = 10;
         PRICE_KEEPA_LEGEND_H: 32,
         PRICE_KEEPA_API_KEY: '',    // płatny klucz Keepa: wpisz — stanie się pierwszym źródłem
         PRICE_KEEPA_API_DOMAIN: 3,  // 1=com 2=co.uk 3=de
+        // Waluta cen dla domeny keepa. Domena spoza listy nie daje ceny wcale —
+        // lepiej brak ceny niż kwota w nieznanej walucie.
+        KEEPA_DOMAIN_CURRENCY: { 1: 'USD', 2: 'GBP', 3: 'EUR', 4: 'EUR', 6: 'CAD', 8: 'EUR', 9: 'EUR' },
         PRICE_MIN_REQUEST_GAP_MS: 3000,
         /**
          * Limit zapytań na sesję — domyślnie bez limitu. Limit trafiałby pod
@@ -874,8 +877,7 @@ const PAID_SHIFT_HOURS = 10;
             priceCard_foundIn: 'found on ${host}',
             priceCard_marketNoData: 'Keepa has no chart for this store — link works, price will not',
             priceCard_displayCurrency: 'Show amounts in',
-            priceCard_displayNative: 'store currency (no conversion)',
-            priceCard_displayCurrencyHint: 'Totals are always counted in euro; the chosen currency is only how they are shown, so switching it mid-shift loses nothing. A converted price is marked with ≈.',
+            priceCard_displayCurrencyHint: 'Every price and every total is shown in this currency, euro by default; prices from other stores are converted at the daily rate and marked with ≈. Totals are always counted in euro, so switching mid-shift loses nothing.',
             priceCard_openHint: 'Click the ASIN to open the product page',
             priceCard_hiddenHint: 'Card hidden — price is still read and added to the sum',
             priceCard_showCard: 'Show the card on screen',
@@ -905,6 +907,8 @@ const PAID_SHIFT_HOURS = 10;
             configCode_hint: 'The code holds everything you changed away from the defaults: lines, colours, transpa\u200brency, sizes, position, switches. Paste it on another machine and you get the same interface.',
             configCode_yours: 'Your code',
             configCode_link: 'Ready-made bookmarklet',
+            configCode_showMatrix: 'Show Data Matrix code',
+            configCode_matrixHint: 'Scan it with a phone or a scanner, or take a photo — the code holds the bookmarklet above, letter for letter.',
             configCode_linkMissing: 'This build has no release address, so there is no ready-made bookmarklet. The code above works as usual: paste it on another machine.',
             configCode_select: 'Select for copying',
             configCode_paste: 'Paste a code here',
@@ -1025,8 +1029,7 @@ const PAID_SHIFT_HOURS = 10;
             priceCard_foundIn: 'znaleziono na ${host}',
             priceCard_marketNoData: 'Keepa nie ma wykresu dla tego sklepu — link działa, ceny nie będzie',
             priceCard_displayCurrency: 'Kwoty pokazywać w',
-            priceCard_displayNative: 'walucie sklepu (bez przeliczania)',
-            priceCard_displayCurrencyHint: 'Sumy liczone są zawsze w euro, a wybrana waluta to tylko sposób pokazania — zmiana w trakcie zmiany niczego nie gubi. Cena przeliczona ma znak ≈.',
+            priceCard_displayCurrencyHint: 'Każda cena i każda suma pokazuje się w tej walucie, domyślnie w euro; ceny z innych sklepów są przeliczane po kursie dziennym i mają znak ≈. Sumy liczone są zawsze w euro, więc zmiana w trakcie zmiany niczego nie gubi.',
             priceCard_openHint: 'Kliknij ASIN, aby otworzyć stronę produktu',
             priceCard_hiddenHint: 'Karta ukryta — cena nadal jest odczytywana i wliczana do sumy',
             priceCard_showCard: 'Pokazuj kartę na ekranie',
@@ -1056,6 +1059,8 @@ const PAID_SHIFT_HOURS = 10;
             configCode_hint: 'W kodzie siedzi wszystko, co zmieniłeś względem wartości domyślnych: linie, kolory, przezroczystość, rozmiary, położenie, wyłączniki. Wklejony na innej maszynie daje ten sam interfejs.',
             configCode_yours: 'Twój kod',
             configCode_link: 'Gotowa zakładka',
+            configCode_showMatrix: 'Pokaż kod Data Matrix',
+            configCode_matrixHint: 'Zeskanuj telefonem albo skanerem albo zrób zdjęcie — kod niesie zakładkę powyżej, znak w znak.',
             configCode_linkMissing: 'Ta kompilacja nie ma adresu wydania, więc gotowej zakładki nie ma. Kod powyżej działa jak zwykle: wklej go na innej maszynie.',
             configCode_select: 'Zaznacz do skopiowania',
             configCode_paste: 'Wklej tu kod',
@@ -1176,8 +1181,7 @@ const PAID_SHIFT_HOURS = 10;
             priceCard_foundIn: 'знайдено на ${host}',
             priceCard_marketNoData: 'У Keepa немає графіка для цього магазину — посилання працює, ціни не буде',
             priceCard_displayCurrency: 'Показувати суми в',
-            priceCard_displayNative: 'валюті магазину (без перерахунку)',
-            priceCard_displayCurrencyHint: 'Суми завжди рахуються в євро, вибрана валюта — лише спосіб показу, тож зміна посеред зміни нічого не втрачає. Перерахована ціна позначена знаком ≈.',
+            priceCard_displayCurrencyHint: 'Кожна ціна і кожна сума показується в цій валюті, типово в євро; ціни з інших магазинів перераховуються за денним курсом і позначені знаком ≈. Суми завжди рахуються в євро, тож зміна посеред зміни нічого не втрачає.',
             priceCard_openHint: 'Клік по ASIN відкриває сторінку товару',
             priceCard_hiddenHint: 'Картку приховано — ціна все одно читається й іде в суму',
             priceCard_showCard: 'Показувати картку на екрані',
@@ -1207,6 +1211,8 @@ const PAID_SHIFT_HOURS = 10;
             configCode_hint: 'У коді лежить усе, що ви змінили відносно значень за замовчуванням: рядки, кольори, прозорість, розміри, положення, вимикачі. Вставлений на іншій машині дає той самий інтерфейс.',
             configCode_yours: 'Ваш код',
             configCode_link: 'Готова закладка',
+            configCode_showMatrix: 'Показати код Data Matrix',
+            configCode_matrixHint: 'Відскануйте телефоном чи сканером або сфотографуйте — код містить закладку вище, знак у знак.',
             configCode_linkMissing: 'У цій збірці не задано адресу релізу, тому готової закладки немає. Код вище працює як завжди: вставте його на іншій машині.',
             configCode_select: 'Виділити для копіювання',
             configCode_paste: 'Вставте сюди код',
@@ -1327,8 +1333,7 @@ const PAID_SHIFT_HOURS = 10;
             priceCard_foundIn: 'найдено на ${host}',
             priceCard_marketNoData: 'У Keepa нет графика для этого магазина — ссылка работает, цены не будет',
             priceCard_displayCurrency: 'Показывать суммы в',
-            priceCard_displayNative: 'валюте магазина (без пересчёта)',
-            priceCard_displayCurrencyHint: 'Суммы всегда считаются в евро, выбранная валюта — только способ показа, поэтому смена посреди смены ничего не теряет. Пересчитанная цена помечена знаком ≈.',
+            priceCard_displayCurrencyHint: 'Каждая цена и каждая сумма показывается в этой валюте, по умолчанию в евро; цены из других магазинов пересчитываются по дневному курсу и помечены знаком ≈. Суммы всегда считаются в евро, поэтому смена посреди смены ничего не теряет.',
             priceCard_openHint: 'Клик по ASIN открывает страницу товара',
             priceCard_hiddenHint: 'Карточка скрыта — цена всё равно читается и идёт в сумму',
             priceCard_showCard: 'Показывать карточку на экране',
@@ -1358,6 +1363,8 @@ const PAID_SHIFT_HOURS = 10;
             configCode_hint: 'В коде лежит всё, что вы изменили относительно значений по умолчанию: строки, цвета, прозрачность, размеры, положение, выключатели. Вставленный на другой машине даёт тот же интерфейс.',
             configCode_yours: 'Ваш код',
             configCode_link: 'Готовая закладка',
+            configCode_showMatrix: 'Показать код Data Matrix',
+            configCode_matrixHint: 'Отсканируйте телефоном или сканером либо сфотографируйте — код содержит закладку выше, знак в знак.',
             configCode_linkMissing: 'В этой сборке не задан адрес релиза, поэтому готовой закладки нет. Код выше работает как обычно: вставьте его на другой машине.',
             configCode_select: 'Выделить для копирования',
             configCode_paste: 'Вставьте сюда код',
@@ -1948,12 +1955,14 @@ const PAID_SHIFT_HOURS = 10;
                 localStorage.setItem(key, value);
             } catch (e) {
                 delete this._lastWritten[key];
+                this._staleKeys.add(key);
                 Utils.error(`Zapis do magazynu nie powiódł się (${key}): ${e.name}. `
                           + 'Skrypt pracuje dalej, ale stan nie przeżyje przeładowania strony.');
                 this.reportWriteFailure();
                 return false;
             }
             this._lastWritten[key] = value;
+            this._staleKeys.delete(key);
             return true;
         },
         /**
@@ -1966,6 +1975,12 @@ const PAID_SHIFT_HOURS = 10;
          * przed postawieniem interfejsu; Notifier pokazuje ją raz na stronę.
          */
         writeFailed: false,
+        /**
+         * Klucze, których ostatni zapis się nie udał: magazyn ma pod nimi
+         * starszą wartość niż pamięć. Udany zapis zdejmuje klucz z listy —
+         * jedna chwilowa odmowa nie odcina karty od sąsiadów do końca zmiany.
+         */
+        _staleKeys: new Set(),
         reportWriteFailure() {
             this.writeFailed = true;
             bus.emit('storage:writeFailed');
@@ -2042,11 +2057,33 @@ const PAID_SHIFT_HOURS = 10;
         // w środku zmiany nie gubi ustawień.
         scheduleSave: Utils.debounce(function() {
             // Zapis w oknie ciszy po wczytaniu stanu sąsiedniej karty nie
-            // przepada — przesuwa się za koniec ciszy.
+            // przepada — przesuwa się za koniec ciszy. Uchwyt na obiekcie:
+            // zamknięcie karty musi go dokończyć, a rozbiórka — zgasić.
             const wait = Persistence.suppressSaveUntil - Date.now();
-            if (wait > 0) { setTimeout(() => Persistence.scheduleSave(), wait); return; }
+            clearTimeout(Persistence._quietTimer);
+            Persistence._quietTimer = null;
+            if (wait > 0) { Persistence._quietTimer = setTimeout(() => Persistence.scheduleSave(), wait); return; }
             Persistence.saveState();
         }, CONFIG.AUTOSAVE_DEBOUNCE_MS),
+        /** @type {any} zapis przesunięty za okno ciszy. */
+        _quietTimer: null,
+        /** Zamknięcie karty: zapis odłożony — także przesunięty za ciszę — idzie teraz. */
+        flushSave() {
+            if (this._quietTimer) {
+                clearTimeout(this._quietTimer);
+                this._quietTimer = null;
+                this.scheduleSave.cancel();
+                this.saveState();
+                return;
+            }
+            this.scheduleSave.flush();
+        },
+        /** Rozbiórka: żaden odłożony zapis nie może już ruszyć. */
+        cancelSave() {
+            clearTimeout(this._quietTimer);
+            this._quietTimer = null;
+            this.scheduleSave.cancel();
+        },
 
         saveCounter(tabKey, count) {
             this.write(this.getKey(CONFIG.STORAGE_PREFIX_TAB_COUNTER + tabKey), String(count));
@@ -2063,7 +2100,7 @@ const PAID_SHIFT_HOURS = 10;
          * Brak klucza to zero: sąsiednia karta zaczęła nową zmianę.
          */
         freshCount(key, fallback) {
-            if (this.writeFailed) return fallback;
+            if (this._staleKeys.has(key)) return fallback;
             try { return this.parseCount(localStorage.getItem(key)); } catch { return fallback; }
         },
         /** +1 do licznika karty (paczki, sprzedane albo poza mianownikiem). */
@@ -2076,9 +2113,10 @@ const PAID_SHIFT_HOURS = 10;
         },
         /** Świeże liczniki zadania dla karty — z tego samego powodu co freshCount. */
         freshTaskCounter(taskId, tabKey, fallback) {
-            if (this.writeFailed) return fallback;
+            const key = this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER + taskId + '_' + tabKey);
+            if (this._staleKeys.has(key)) return fallback;
             try {
-                const raw = localStorage.getItem(this.getKey(CONFIG.STORAGE_PREFIX_TASK_COUNTER + taskId + '_' + tabKey));
+                const raw = localStorage.getItem(key);
                 return this.parseTaskCounterValue(raw);
             } catch { return fallback; }
         },
@@ -2212,6 +2250,12 @@ const PAID_SHIFT_HOURS = 10;
          *   karty zaczynają w nieskończoność przepisywać sobie stan nawzajem.
          */
         loadAll(fromRemote = false) {
+            // Stan sąsiedniej karty podmienia kilka gałęzi naraz, a każda
+            // budzi przerysowanie okna — wystarczy jedno, po całości.
+            if (fromRemote) StatsWindowRenderer.batch(() => this._load(true));
+            else this._load(false);
+        },
+        _load(fromRemote) {
             try {
                 for (const [name, storageKey] of [['userConfig', CONFIG.STORAGE_KEY_USER_CONFIG],
                                                   ['sessionConfig', CONFIG.STORAGE_KEY_SESSION_CONFIG]]) {
@@ -2427,6 +2471,23 @@ const PAID_SHIFT_HOURS = 10;
             store.activeTaskId = null;
             store.taskCounters = {};
             TaskManager.init();
+
+            // Przedmiot zakończony przed resetem należy do odchodzącej zmiany:
+            // pojemnik czekający na zniknięcie pola, spóźniony kod sortowania
+            // i premia za sprzedaż nie mogą dopisać się do nowej. Przedmiot
+            // dopiero zaczęty zostaje — zostanie skończony już w nowej
+            // zmianie. Liczniki kodów na stronie (Routing._prev) też zostają:
+            // kody, które już tam leżą, nie są nowymi zdarzeniami.
+            const item = AutoTrigger.item;
+            if (!item || item.finished) {
+                AutoTrigger.item = null;
+                ToteWatch.pending = null;
+                store.uiFlags.itemInProgress = false;
+            }
+            if (Routing.state && Routing.state.completed) Routing.state = null;
+            if (Routing._ambiguous && Routing._ambiguous.completed) Routing._ambiguous = null;
+            // Bezczynność liczy się od pojemnika TEJ zmiany.
+            store.sessionConfig.lastToteAt = null;
 
             // Dziennik wartości to ta sama ewidencja w pieniądzach. Podsumowanie
             // odchodzącej zmiany trafia przed czyszczeniem do archiwum.
@@ -2772,9 +2833,9 @@ const PAID_SHIFT_HOURS = 10;
             // bez tej ścieżki procent czekałby na takt timera.
             onStorePaths(['tabCounters', 'tabSold', 'tabNeutral', 'tasks', 'activeTaskId',
                           'taskCounters', 'sessionConfig', 'userConfig', 'localTabConfig'],
-                         () => this.renderContent());
+                         () => this.refresh());
             onStorePaths(['localTabConfig.statsWindowPosition'], () => this.applyPosition());
-            bus.on('valueLog:changed', () => this.renderContent());
+            bus.on('valueLog:changed', () => this.refresh());
             // Takt raz na sekundę: zegar w linii 5 i czas pracy idą płynnie.
             this.tickTimer = setInterval(() => this.renderContent(), CONFIG.UI_UPDATE_INTERVAL_MS);
 
@@ -2850,10 +2911,8 @@ const PAID_SHIFT_HOURS = 10;
                 return sp;
             };
             // Sumy są zawsze w euro; waluta wyświetlania to jedno mnożenie
-            // tutaj. „Jak w sklepie” zostaje przy euro — bilans z kilku sklepów
-            // nie ma jednej waluty. Bez kursu do wybranej waluty zostaje euro.
-            let cur = FxRates.displayCurrency() || 'EUR';
-            if (FxRates.fromEur(0, cur) == null) cur = 'EUR';
+            // tutaj. Bez kursu do wybranej waluty zostaje euro.
+            const cur = FxRates.sumCurrency();
             const money = (v) => FxRates.fromEur(v, cur).toFixed(2);
 
             l6.appendChild(piece(`+${money(vt.sold)}`, GREEN));
@@ -2953,6 +3012,22 @@ const PAID_SHIFT_HOURS = 10;
             return !cfg || cfg.visible !== false;
         },
 
+        /** Ile wywołań batch() trwa; w ich trakcie przerysowanie czeka. */
+        _held: 0,
+        _dirty: false,
+        /** Seria zmian stanu z jednym przerysowaniem na końcu. */
+        batch(fn) {
+            this._held++;
+            try { fn(); } finally {
+                this._held--;
+                if (!this._held && this._dirty) { this._dirty = false; this.renderContent(); }
+            }
+        },
+        /** Przerysowanie po zmianie stanu — w trakcie batch() odkładane. */
+        refresh() {
+            if (this._held) this._dirty = true;
+            else this.renderContent();
+        },
         renderContent() {
             Perf.counts.renders++;
             const { workedMs } = ShiftManager.getWorkTime();
@@ -3231,18 +3306,43 @@ const PAID_SHIFT_HOURS = 10;
                 if (store.uiFlags.isSettingsPanelVisible) this.render();
             }, 0);
         },
+        /**
+         * Kod Data Matrix na płótnie: czarne moduły na białym tle ze strefą
+         * ciszy dwóch modułów — tyle potrzebuje skaner.
+         * @returns {HTMLCanvasElement|null} null, gdy tekstu nie da się zakodować.
+         */
+        matrixCanvas(text) {
+            const m = DataMatrix.encode(text);
+            if (!m) return null;
+            const cell = 4, quiet = 2, side = (m.length + 2 * quiet) * cell;
+            const canvas = /** @type {HTMLCanvasElement} */ (h('canvas', { width: side, height: side }));
+            canvas.style.display = 'block';
+            canvas.style.marginTop = '6px';
+            const ctx = canvas.getContext && canvas.getContext('2d');
+            if (!ctx) return canvas;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, side, side);
+            ctx.fillStyle = '#000000';
+            m.forEach((row, r) => row.forEach((dark, c) => {
+                if (dark) ctx.fillRect((c + quiet) * cell, (r + quiet) * cell, cell, cell);
+            }));
+            return canvas;
+        },
         toggle() {
             store.uiFlags.isSettingsPanelVisible = !store.uiFlags.isSettingsPanelVisible;
+            // Animacja poprzedniego przełączenia nie może dokończyć się po
+            // tym: szybkie zamknij-otwórz schowałoby otwarty już panel.
+            clearTimeout(this._slideTimer);
             if (store.uiFlags.isSettingsPanelVisible) {
                 this.render();
                 this.el.style.display = 'block';
-                setTimeout(() => this.el.style.transform = 'translateX(0)', 10);
+                this._slideTimer = setTimeout(() => this.el.style.transform = 'translateX(0)', 10);
                 this.captureInput(true);
             } else {
                 this.captureInput(false);
                 this.el.style.transform = 'translateX(110%)';
                 Persistence.saveState();
-                setTimeout(() => this.el.style.display = 'none', 200);
+                this._slideTimer = setTimeout(() => this.el.style.display = 'none', 200);
             }
         },
 
@@ -3731,11 +3831,10 @@ const PAID_SHIFT_HOURS = 10;
             // więc przełączenie w trakcie zmiany niczego nie gubi. Ustawienie
             // wspólne jak sklep: wszystkie karty mówią jedną walutą.
             secPrice.appendChild(UIBuilder.row(I18n.get('priceCard_displayCurrency'), UIBuilder.select(
-                [{ value: 'native', text: I18n.get('priceCard_displayNative') }]
-                    .concat(Object.entries(CONFIG.DISPLAY_CURRENCIES).map(([code, sign]) => ({
-                        value: code, text: `${code} (${sign})`,
-                    }))),
-                FxRates.displayCurrency() || 'native',
+                Object.entries(CONFIG.DISPLAY_CURRENCIES).map(([code, sign]) => ({
+                    value: code, text: `${code} (${sign})`,
+                })),
+                FxRates.displayCurrency(),
                 v => { store.userConfig.displayCurrency = v; PriceCard.render(); this.rerender(); })));
             secPrice.appendChild(UIBuilder.hint(I18n.get('priceCard_displayCurrencyHint')));
 
@@ -3856,11 +3955,14 @@ const PAID_SHIFT_HOURS = 10;
             secVal.appendChild(UIBuilder.hint(I18n.get('valueLog_hint')));
 
             const vt = ValueLog.totals();
+            // Ta sama waluta co w linii 6 — dwie sumy jednego dziennika
+            // w dwóch walutach to zagadka, a nie informacja.
+            const sumCur = FxRates.sumCurrency();
             secVal.appendChild(h('div', {
                 textContent: I18n.get('valueLog_stats', {
                     count: vt.count,
-                    sum: vt.net.toFixed(2),
-                    currency: vt.currency,
+                    sum: FxRates.fromEur(vt.net, sumCur).toFixed(2),
+                    currency: CONFIG.DISPLAY_CURRENCIES[sumCur],
                     unpriced: vt.unpriced + vt.noRate,
                 }),
                 style: { fontWeight: '600', marginBottom: '4px' },
@@ -3923,6 +4025,19 @@ const PAID_SHIFT_HOURS = 10;
             secCode.appendChild(link
                 ? UIBuilder.row(I18n.get('configCode_link'), readOnlyBox(link))
                 : UIBuilder.hint(I18n.get('configCode_linkMissing')));
+            if (link) {
+                // Kod obrazkowy rysuje się dopiero na żądanie: panel otwiera
+                // się przy starcie, a obrazek jest potrzebny raz na maszynę.
+                const holder = h('div');
+                secCode.appendChild(UIBuilder.button(I18n.get('configCode_showMatrix'), () => {
+                    holder.textContent = '';
+                    const canvas = this.matrixCanvas(link);
+                    if (!canvas) return;
+                    holder.appendChild(canvas);
+                    holder.appendChild(UIBuilder.hint(I18n.get('configCode_matrixHint')));
+                }));
+                secCode.appendChild(holder);
+            }
 
             secCode.appendChild(UIBuilder.button(I18n.get('configCode_select'), () => {
                 codeBox.focus();
@@ -4130,7 +4245,7 @@ const PAID_SHIFT_HOURS = 10;
      *                 to klucz z CONFIG.MARKETPLACES (bez niego: wybrany).
      *
      *   PriceResult = { current: Money|null, rrp: Money|null, stale: boolean,
-     *                   secondary?: { text }, series?: string, market?: string }
+     *                   secondary?: Money & { label }, series?: string, market?: string }
      *   Money       = { value: number, currency: string, text: string }
      *                 — waluta musi mieć kurs w CONFIG.FX_FALLBACK, inaczej
      *                 kwota nie wejdzie do sum w euro (PriceSources.money()).
@@ -4477,8 +4592,8 @@ const PAID_SHIFT_HOURS = 10;
             const top = this.pickHighest(rows);
             if (!top) return null;
             const second = rows
-                .filter(r => r.price && r.price !== top.price)
-                .map(r => ({ series: r.series, text: `${r.series} ${r.price}` }))[0] || null;
+                .filter(r => r.price && r.price !== top.price && isFinite(parseFloat(r.price)))
+                .map(r => ({ series: r.series, value: parseFloat(r.price), text: `${r.series} ${r.price}` }))[0] || null;
             return { top, second, rows };
         },
     };
@@ -4639,7 +4754,10 @@ const PAID_SHIFT_HOURS = 10;
             return {
                 current: this.money(d.top.value, marketplace(key).currency),
                 rrp: null,
-                secondary: d.second ? { text: d.second.text } : null,
+                // Druga seria wykresu w walucie rynku, jak cena główna — karta
+                // pokazuje ją przeliczoną, a nie samą liczbę bez waluty.
+                secondary: d.second ? { ...this.money(d.second.value, marketplace(key).currency),
+                                        label: d.second.series } : null,
                 series: d.top.series,
                 market: key,
                 stale: false,
@@ -4698,7 +4816,11 @@ const PAID_SHIFT_HOURS = 10;
                         const cur = cents(st.current && st.current[1]) ?? cents(st.current && st.current[0]);
                         const rrp = cents(p.listPrice);
                         if (cur == null && rrp == null) throw new Error('w odpowiedzi nie ma cen');
-                        const mk = (v) => v == null ? null : self.money(v, 'EUR');
+                        // Waluta idzie z domeny zapytania: ceny co.uk są w funtach,
+                        // a podpisane jako euro weszłyby do sum bez przeliczenia.
+                        const currency = CONFIG.KEEPA_DOMAIN_CURRENCY[CONFIG.PRICE_KEEPA_API_DOMAIN];
+                        if (!currency) throw new Error('nieznana domena keepa: ' + CONFIG.PRICE_KEEPA_API_DOMAIN);
+                        const mk = (v) => v == null ? null : self.money(v, currency);
                         return { current: mk(cur), rrp: mk(rrp), stale: false };
                     },
                 },
@@ -4932,6 +5054,7 @@ const PAID_SHIFT_HOURS = 10;
                 Persistence.reportWriteFailure();
             }
             this.scheduleArchive();
+            this._totals = null;
             bus.emit('valueLog:changed');
         },
 
@@ -4951,6 +5074,7 @@ const PAID_SHIFT_HOURS = 10;
                 clearTimeout(this._writeBackTimer);
                 this.entries = [];
                 this.shiftStart = store.sessionConfig.shiftCalculatedStartTime || null;
+                this._totals = null;
                 bus.emit('valueLog:changed');
                 return;
             }
@@ -4960,6 +5084,7 @@ const PAID_SHIFT_HOURS = 10;
             this.entries = merged;
             this._knownRaw = text;
             if (shared.shiftStart) this.shiftStart = shared.shiftStart;
+            this._totals = null;
             bus.emit('valueLog:changed');
             if (before !== merged.length || haveOurOwn) {
                 Utils.log(`[DZIENNIK] synchronizacja: u nas było ${before}, w magazynie `
@@ -5146,7 +5271,21 @@ const PAID_SHIFT_HOURS = 10;
          * Wpisy bez ceny i bez kursu nie wchodzą do sum i są liczone osobno,
          * żeby zaniżona suma miała widoczną przyczynę.
          */
+        /**
+         * Sumy dziennika. Linia 6 woła je co sekundę, a dziennik rośnie przez
+         * całą zmianę — przeliczenie idzie więc tylko po zmianie dziennika
+         * (każda zmiana kończy się zdarzeniem 'valueLog:changed' i zeruje
+         * zapamiętany wynik) albo kursów. Wynik jest wspólny: nie zmieniać.
+         */
+        _totals: null,
         totals() {
+            const c = this._totals;
+            if (c && c.entries === this.entries && c.rates === FxRates.rates) return c.value;
+            const value = this._computeTotals();
+            this._totals = { entries: this.entries, rates: FxRates.rates, value };
+            return value;
+        },
+        _computeTotals() {
             let sold = 0, unsold = 0, soldN = 0, unsoldN = 0;
             let undetermined = 0, unpriced = 0, noRate = 0;
             for (const e of this.entries) {
@@ -5175,6 +5314,7 @@ const PAID_SHIFT_HOURS = 10;
             try { localStorage.removeItem(this.key()); } catch (e) { /* nie ma czego usuwać albo magazyn niedostępny — i tak czyścimy stan w pamięci */ }
             delete Persistence._lastWritten[this.key()];
             Utils.log(`[DZIENNIK] wyczyszczony: ${reason}`);
+            this._totals = null;
             bus.emit('valueLog:changed');
         },
 
@@ -5252,6 +5392,12 @@ const PAID_SHIFT_HOURS = 10;
             // razy droższy, ani trzy razy tańszy. Krzywą odpowiedź lepiej
             // odrzucić, niż policzyć po niej całą zmianę.
             if (!out.USD || out.USD < 0.3 || out.USD > 3) return null;
+            // To samo dla reszty znanych walut: kurs odwrócony albo przesunięty
+            // o rząd wielkości (PLN 0,0045 zamiast 4,5) psułby sumy po cichu.
+            for (const k of Object.keys(CONFIG.FX_FALLBACK)) {
+                const ratio = out[k] / CONFIG.FX_FALLBACK[k];
+                if (out[k] && (ratio < 1 / 3 || ratio > 3)) return null;
+            }
             return out;
         },
 
@@ -5259,7 +5405,9 @@ const PAID_SHIFT_HOURS = 10;
             try {
                 const raw = JSON.parse(localStorage.getItem(this.key()) || 'null');
                 if (!raw || !raw.rates || typeof raw.ts !== 'number') return false;
-                if (Date.now() - raw.ts > CONFIG.FX_TTL_MS) return false;
+                // Znacznik z przyszłości (cofnięty zegar) nie wygasłby nigdy.
+                const age = Date.now() - raw.ts;
+                if (age < 0 || age > CONFIG.FX_TTL_MS) return false;
                 const norm = this.normalize(raw.rates);
                 if (!norm) return false;
                 this.rates = norm; this.source = raw.source; this.fetchedAt = raw.ts;
@@ -5335,15 +5483,30 @@ const PAID_SHIFT_HOURS = 10;
             return this.rates;
         },
 
+        /**
+         * Kurs waluty (jednostek za 1 EUR): pobrany, a gdy pobranej tablicy
+         * tej waluty brakuje — wbudowany. Kursy z sieci gwarantują tylko
+         * dolara; cena w funtach bez kursu wypadłaby z sumy zmiany i została
+         * na karcie w funtach, a liczy się tu każda waluta, którą da się
+         * przeliczyć, choćby kursem przybliżonym.
+         * @returns {number|null}
+         */
+        rateOf(cur) {
+            for (const table of [this.rates, CONFIG.FX_FALLBACK]) {
+                if (!table || !Object.prototype.hasOwnProperty.call(table, cur)) continue;
+                const rate = table[cur];
+                if (typeof rate === 'number' && isFinite(rate) && rate > 0) return rate;
+            }
+            return null;
+        },
+
         /** @returns {number|null} kwota w euro albo null, jeśli kursu nie ma. */
         toEur(value, currency) {
             if (typeof value !== 'number' || !isFinite(value)) return null;
-            const cur = (currency || 'EUR').toUpperCase();
+            const cur = String(currency || 'EUR').toUpperCase();
             if (cur === 'EUR') return value;
-            const table = this.rates || CONFIG.FX_FALLBACK;
-            const rate = table[cur];
-            if (!rate || !isFinite(rate) || rate <= 0) return null;
-            return value / rate;      // w tablicy — jednostek waluty za 1 EUR
+            const rate = this.rateOf(cur);
+            return rate ? value / rate : null;
         },
 
         /**
@@ -5356,42 +5519,48 @@ const PAID_SHIFT_HOURS = 10;
             if (typeof eur !== 'number' || !isFinite(eur)) return null;
             const cur = String(currency || 'EUR').toUpperCase();
             if (cur === 'EUR') return eur;
-            const table = this.rates || CONFIG.FX_FALLBACK;
-            const rate = Object.prototype.hasOwnProperty.call(table, cur) ? table[cur] : null;
-            if (!rate || !isFinite(rate) || rate <= 0) return null;
-            return eur * rate;
+            const rate = this.rateOf(cur);
+            return rate ? eur * rate : null;
         },
 
         /**
-         * Waluta wyświetlania albo null, czyli „jak w sklepie”.
+         * Waluta wyświetlania: jedna dla wszystkich kwot, domyślnie euro.
          *
          * Wartość przychodzi z localStorage, więc może być czymkolwiek:
-         * `'__proto__'`, `'XYZ'`, liczbą. Przechodzi wyłącznie 'native' albo
-         * klucz własny CONFIG.DISPLAY_CURRENCIES — wszystko inne to wartość
-         * domyślna (euro), a nie ciche przejście na waluty sklepów.
+         * `'__proto__'`, `'XYZ'`, liczbą, a także dawne „jak w sklepie”
+         * (`'native'`). Przechodzi wyłącznie klucz własny
+         * CONFIG.DISPLAY_CURRENCIES — wszystko inne to euro, a nie ciche
+         * przejście na waluty sklepów.
          */
         displayCurrency() {
             const own = (c) => typeof c === 'string'
                 && Object.prototype.hasOwnProperty.call(CONFIG.DISPLAY_CURRENCIES, c);
             const cur = store.userConfig && store.userConfig.displayCurrency;
-            if (cur === 'native') return null;
             if (own(cur)) return cur;
-            return own(DEFAULT_USER_CONFIG.displayCurrency) ? DEFAULT_USER_CONFIG.displayCurrency : null;
+            return own(DEFAULT_USER_CONFIG.displayCurrency) ? DEFAULT_USER_CONFIG.displayCurrency : 'EUR';
         },
 
         /**
-         * Kwota w dowolnej walucie pokazana w walucie wyświetlania.
+         * Waluta sum (linia 6, panel): wyświetlania, a bez kursu do niej —
+         * euro. Suma nigdy nie wychodzi w walucie, której nie da się policzyć.
+         */
+        sumCurrency() {
+            const cur = this.displayCurrency();
+            return this.fromEur(0, cur) == null ? 'EUR' : cur;
+        },
+
+        /**
+         * Kwota w dowolnej walucie pokazana w walucie sum.
          *
          * `≈` stoi wtedy, gdy kwota została przeliczona: kurs jest dzienny,
          * a bez sieci — wbudowany, więc to szacunek, nie cena z Amazonu. Ta
          * sama waluta co w sklepie idzie bez znaku, bo niczego nie liczono.
          *
-         * @returns {string|null} tekst albo null, gdy wybrano „jak w sklepie”
-         *   lub nie ma kursu — wtedy wywołujący pokazuje cenę tak, jak przyszła.
+         * @returns {string|null} tekst albo null, gdy waluty ceny nie da się
+         *   przeliczyć — wtedy wywołujący pokazuje cenę tak, jak przyszła.
          */
         display(value, currency) {
-            const cur = this.displayCurrency();
-            if (!cur) return null;
+            const cur = this.sumCurrency();
             const from = String(currency || 'EUR').toUpperCase();
             const v = from === cur ? value : this.fromEur(this.toEur(value, from), cur);
             if (typeof v !== 'number' || !isFinite(v)) return null;
@@ -5591,6 +5760,13 @@ const PAID_SHIFT_HOURS = 10;
 
         onCode(code) {
             if (!this.state) this.startItem('kod przyszedł przed początkiem');
+            // Kierunek przedmiotu już wszedł do liczników: drugi kod (ponowne
+            // skanowanie tego samego przedmiotu) zmieniłby tylko dziennik
+            // i rozjechałby go z licznikami sprzedanych.
+            if (this.state.counted) {
+                Utils.log(`[KIERUNEK] ${code} po rozliczeniu przedmiotu — pominięty`);
+                return;
+            }
             this.state.code = code;
             const kind = this.kindOf(code);
             if (kind === 'ambiguous') {
@@ -5637,6 +5813,7 @@ const PAID_SHIFT_HOURS = 10;
             if (!this.state) this.startItem('zaliczenie bez początku');
             this.state.weight = weight;
             this.state.bonusIfSell = !!bonusIfSell;
+            this.state.taskId = store.activeTaskId;
         },
 
         /** Nazwa kierunku do dziennika w konsoli. */
@@ -5700,7 +5877,7 @@ const PAID_SHIFT_HOURS = 10;
             // Fraza o odsprzedaży + sprzedaż: przedmiot podwójny, druga sztuka
             // dochodzi teraz, gdy kierunek jest już znany.
             if (st.bonusIfSell && st.direction === 'sell') {
-                InputManager.modifyCounter(1);
+                InputManager.modifyCounter(1, { taskId: st.taskId });
                 st.weight = (st.weight || 1) + 1;
                 Diag.event('premia za sprzedaż +1');
             }
@@ -5712,10 +5889,10 @@ const PAID_SHIFT_HOURS = 10;
             for (let i = 0; i < (st.weight || 1); i++) {
                 if (st.direction === 'sell') {
                     Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_SOLD, store.tabSold, cid);
-                    TaskManager.addSold(cid);
+                    TaskManager.addSold(cid, st.taskId);
                 } else if (st.direction === 'neutral') {
                     Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_NEUTRAL, store.tabNeutral, cid);
-                    TaskManager.addNeutral(cid);
+                    TaskManager.addNeutral(cid, st.taskId);
                 }
             }
         },
@@ -6497,9 +6674,10 @@ const PAID_SHIFT_HOURS = 10;
         },
 
         /**
-         * Tekst ceny na karcie: w walucie wyświetlania, jeśli ją wybrano,
-         * inaczej tak, jak przyszła ze sklepu. Obiekt ceny się nie zmienia —
-         * do dziennika idzie kwota i waluta sklepu, do sumy euro.
+         * Tekst ceny na karcie: w walucie wyświetlania (domyślnie euro).
+         * Tak, jak przyszła ze sklepu, tylko gdy jej waluty nie da się
+         * przeliczyć. Obiekt ceny się nie zmienia — do dziennika idzie kwota
+         * i waluta sklepu, do sumy euro.
          */
         priceText(p) {
             return FxRates.display(p.value, p.currency) || p.text;
@@ -6601,7 +6779,7 @@ const PAID_SHIFT_HOURS = 10;
                     this.rrpEl.style.textDecoration = 'line-through';
                     this.rrpEl.style.display = 'block';
                 } else if (pc.showRrp && r.secondary) {
-                    this.rrpEl.textContent = r.secondary.text;
+                    this.rrpEl.textContent = `${r.secondary.label} ${this.priceText(r.secondary)}`;
                     this.rrpEl.style.textDecoration = 'none';
                     this.rrpEl.style.display = 'block';
                 } else {
@@ -6772,10 +6950,12 @@ const PAID_SHIFT_HOURS = 10;
         },
         /**
          * @param {number} delta
-         * @param {{manual?: boolean}} [opts] - `manual` znaczy „człowiek poprawia
-         *   to, czego program nie zobaczył”. Taka paczka wchodzi do zadania
-         *   inaczej niż zaliczona automatycznie: razem z licznikiem „poza
-         *   mianownikiem”, bo jej kierunku nikt nie zna (patrz TaskManager).
+         * @param {{manual?: boolean, taskId?: string}} [opts] - `manual` znaczy
+         *   „człowiek poprawia to, czego program nie zobaczył”. Taka paczka
+         *   wchodzi do zadania inaczej niż zaliczona automatycznie: razem
+         *   z licznikiem „poza mianownikiem”, bo jej kierunku nikt nie zna
+         *   (patrz TaskManager). `taskId` — zadanie, do którego należy paczka,
+         *   gdy nie jest nim zadanie aktywne (premia za sprzedaż).
          */
         modifyCounter(delta, opts = {}) {
             const cid = store.currentTabInstanceId;
@@ -6788,7 +6968,7 @@ const PAID_SHIFT_HOURS = 10;
                 TaskManager.syncShift(cid);
                 return;
             }
-            TaskManager.addItem(cid);
+            TaskManager.addItem(cid, opts.taskId);
             Persistence.bump(CONFIG.STORAGE_PREFIX_TAB_COUNTER, store.tabCounters, cid);
             // Przerysowanie wywołuje sam zapis do stanu (onStorePaths po
             // 'tabCounters') — jawne renderContent() dałoby drugi render.
@@ -6820,10 +7000,12 @@ const PAID_SHIFT_HOURS = 10;
         debouncedAttach: null,
         /** Przedmioty, które dostały wyzwalacz końcowy — porównanie w SH.tote(). */
         textCompleted: 0,
-        /** @type {{finished: boolean, finishedAt: number, toteOk: boolean, sticker: boolean, phrase: boolean}|null} */
+        /** @type {{finished: boolean, finishedAt: number, toteOk: boolean, sticker: boolean, phrase: boolean, stickerLeftover: boolean}|null} */
         item: null,
         /** Czy wyzwalacz początku był w poprzednim skanie (do wykrycia zbocza). */
         preSeen: false,
+        /** Czy naklejka była widoczna w poprzednim skanie (do wykrycia zbocza). */
+        stickerSeen: false,
 
         isOwnNode(node) {
             if (!node) return false;
@@ -6866,25 +7048,36 @@ const PAID_SHIFT_HOURS = 10;
             // razu przy tworzeniu wpisu.
             Routing.observe(txt);
 
+            // Pojemnik przed wyzwalaczem początku: pole poprzedniego przedmiotu
+            // potrafi zniknąć w tej samej klatce, w której pojawia się następny
+            // krok, a przybity pojemnik (także `tsREP…`) należy do przedmiotu,
+            // który go dostał, a nie do tego, który dopiero się zaczyna.
+            const tote = ToteWatch.check();
+            if (tote !== null) this.onTote(tote);
+
             const pre = CONFIG.PRE_TRIGGER_REGEX.test(txt);
             if (pre && !this.preSeen) this.start();
             this.preSeen = pre;
 
             const item = this.item;
-            if (item && CONFIG.DOUBLE_TAB_TYPES.includes(store.currentTabType)) {
+            if (CONFIG.DOUBLE_TAB_TYPES.includes(store.currentTabType)) {
                 // Naklejka liczy się widoczna: strona potrafi przysłać następny
                 // krok z wyprzedzeniem, ukryty (offsetParent === null). Sam
                 // element bywa pusty i bez wymiarów, więc rozmiar nie świadczy
                 // o niczym.
-                if (!item.sticker) {
-                    const sticker = document.getElementById(CONFIG.STICKER_ELEMENT_ID);
-                    if (sticker && sticker.offsetParent !== null) {
-                        item.sticker = true;
-                        Diag.event('naklejka');
-                        Routing.onSticker();
-                    }
+                const el = document.getElementById(CONFIG.STICKER_ELEMENT_ID);
+                const visible = !!el && el.offsetParent !== null;
+                // Naklejka widoczna już w chwili startu wisi z poprzedniego
+                // przedmiotu: nowy dostaje ją dopiero, gdy zniknie i pojawi się
+                // znowu.
+                if (item && !visible) item.stickerLeftover = false;
+                if (item && !item.sticker && visible && !item.stickerLeftover) {
+                    item.sticker = true;
+                    Diag.event('naklejka');
+                    Routing.onSticker();
                 }
-                if (!item.phrase && CONFIG.RESALE_PHRASE_REGEX.test(txt)) {
+                this.stickerSeen = visible;
+                if (item && !item.phrase && CONFIG.RESALE_PHRASE_REGEX.test(txt)) {
                     item.phrase = true;
                     Diag.event('fraza odsprzedaży');
                 }
@@ -6903,8 +7096,6 @@ const PAID_SHIFT_HOURS = 10;
                 store.uiFlags.autoTriggerFound = false;
             }
 
-            const tote = ToteWatch.check();
-            if (tote !== null) this.onTote(tote);
             // Karta ceny korzysta z tego skanu zamiast własnego obserwatora
             // i drugiego odczytu document.innerText.
             bus.emit('page:scanned', { text: txt });
@@ -6916,7 +7107,13 @@ const PAID_SHIFT_HOURS = 10;
             const prev = this.item;
             if (prev && prev.finished) this.count('nowy początek bez pojemnika');
             else if (prev) Diag.event('przerwany — nowy początek');
-            this.item = { finished: false, finishedAt: 0, toteOk: false, sticker: false, phrase: false };
+            // Pojemnik wpisany, a pole jeszcze nie zniknęło: należy do
+            // poprzedniego przedmiotu, którego już nie ma — następny nie może
+            // go dostać jako własny.
+            ToteWatch.pending = null;
+            this.item = { finished: false, finishedAt: 0, toteOk: false, sticker: false, phrase: false,
+                          stickerLeftover: this.stickerSeen };
+            if (this.stickerSeen) Diag.event('naklejka z poprzedniego przedmiotu — pominięta');
             // Zbocze false -> true flagi: Routing i karta ceny zaczynają nowy
             // przedmiot także wtedy, gdy poprzedni został przerwany w trakcie.
             store.uiFlags.itemInProgress = false;
@@ -7068,6 +7265,7 @@ const PAID_SHIFT_HOURS = 10;
             // Jednorazowe timery też — inaczej po chwili ruszyłyby render()
             // zdjętego interfejsu.
             clearTimeout(SettingsPanel._rerenderTimer);
+            clearTimeout(SettingsPanel._slideTimer);
             clearTimeout(Notifier._hideTimer);
             clearTimeout(ValueLog._archiveTimer);
             clearTimeout(ValueLog._writeBackTimer);
@@ -7075,7 +7273,7 @@ const PAID_SHIFT_HOURS = 10;
             // Odłożone wywołania debounce — po rozbiórce autozapis nadpisałby
             // magazyn starym stanem, a skan dopisałby paczkę do klucza nowego
             // egzemplarza (test w 27-pending-writes).
-            Persistence.scheduleSave.cancel();
+            Persistence.cancelSave();
             Persistence.debouncedLoad.cancel();
             if (AutoTrigger.debouncedScan) AutoTrigger.debouncedScan.cancel();
             if (AutoTrigger.debouncedAttach) AutoTrigger.debouncedAttach.cancel();
@@ -7218,7 +7416,7 @@ const PAID_SHIFT_HOURS = 10;
                 // (400 ms). Bez dokończenia tutaj ostatnie zmiany ginęłyby przy F5.
                 this.onPageHide = () => {
                     try {
-                        Persistence.scheduleSave.flush();
+                        Persistence.flushSave();
                         ValueLog.flushWriteBack();
                         ValueLog.flushArchive();
                     } catch (e) { /* strona już się zamyka — nie ma komu zgłosić błędu */ }
@@ -7482,6 +7680,8 @@ const PAID_SHIFT_HOURS = 10;
             graphMode: ['legend', 'right', 'full'],
             language: ['pl', 'en', 'ru', 'uk'],
             marketplace: ['de', 'co.uk', 'com', 'it', 'fr', 'es', 'nl', 'ca', 'se', 'com.be', 'pl'],
+            // 'native' (dawne „jak w sklepie”) zostaje na swoim miejscu, żeby
+            // stare kody dalej się rozkładały; czytane jest jako euro.
             displayCurrency: ['native', 'EUR', 'PLN', 'GBP', 'SEK', 'USD', 'CAD'],
             cretProfile: ['CRET', 'FAST'],
         },
@@ -7583,7 +7783,7 @@ const PAID_SHIFT_HOURS = 10;
             // --- wspólne dla wszystkich kart ---
             { id: 0x0300, root: 'user', path: 'language', type: 'enum', list: 'language' },
             { id: 0x0301, root: 'user', path: 'marketplace', type: 'enum', list: 'marketplace' },
-            { id: 0x0302, root: 'user', path: 'triggerMutationDebounceMs', type: 'u16', min: 0, max: 5000 },
+            { id: 0x0302, root: 'user', path: 'triggerMutationDebounceMs', type: 'u16', min: CONFIG.MIN_TRIGGER_DEBOUNCE_MS, max: CONFIG.MAX_TRIGGER_DEBOUNCE_MS },
             { id: 0x0303, root: 'user', path: 'settingsPanelWidth', type: 'u16', min: 200, max: 2000 },
             { id: 0x0304, root: 'user', path: 'globalStatsContributionKnown.CRET', type: 'bool' },
             { id: 0x0305, root: 'user', path: 'globalStatsContributionKnown.REFURB', type: 'bool' },
@@ -7863,11 +8063,22 @@ const PAID_SHIFT_HOURS = 10;
             // rusza pobieranie pliku, który zastaje go gotowego (BOOT_VAR).
             // `r.ok` nie puszcza strony błędu 404/503 do wykonania, a `catch`
             // pokazuje przyczynę zamiast milczeć po kliknięciu.
+            // Tekst jest czysto ASCII: zakładkę skanuje się też z kodu Data
+            // Matrix, a znak w rodzaju „ł” wywraca generatory i skanery.
+            // Ustawienia domyślne dają pusty kod — wtedy zakładka go nie niesie
+            // i kod obrazkowy jest mniejszy.
+            const code = this.encode();
+            // Bez kodu drugie kliknięcie tylko otwiera panel, jak zakładka
+            // z README; z kodem skrypt ma się wczytać od nowa, żeby go nałożyć.
+            const f = this.FORMAT.toString(16).padStart(2, '0');
+            const boot = code === '0x' + f + f
+                ? 'if(window.SH&&SH.settings){SH.settings();return}'
+                : "window['" + this.BOOT_GLOBAL + "']='" + code + "';";
             // eslint-disable-next-line no-script-url -- tekst zakładki, patrz wyżej
-            return "javascript:(async()=>{try{window['" + this.BOOT_GLOBAL + "']='" + this.encode()
-                + "';const r=await fetch('" + CONFIG.RELEASE_URL
+            return "javascript:(async()=>{try{" + boot
+                + "const r=await fetch('" + CONFIG.RELEASE_URL
                 + "',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);eval(await r.text())}"
-                + "catch(e){alert('StatsHelper nie wystartował: '+e.message)}})();void 0;";
+                + "catch(e){alert('StatsHelper: '+e.message)}})();void 0;";
         },
     };
 
@@ -8387,19 +8598,38 @@ const PAID_SHIFT_HOURS = 10;
          * dopisze się osobno (Routing woła `addSold` albo `addNeutral`, gdy go
          * pozna — może to być dopiero za kilka skanów).
          */
-        addItem(tabKey) {
-            const task = this.ensureRunning();
+        addItem(tabKey, taskId) {
+            const task = this._owner(taskId) || this.ensureRunning();
             if (task) this._bump(task, tabKey, 'done');
         },
 
-        addSold(tabKey) {
-            const task = this.active();
+        addSold(tabKey, taskId) {
+            const task = this._owner(taskId) || this.active();
             if (task) this._bump(task, tabKey, 'sold');
         },
 
-        addNeutral(tabKey) {
-            const task = this.active();
+        addNeutral(tabKey, taskId) {
+            const task = this._owner(taskId) || this.active();
             if (task) this._bump(task, tabKey, 'neutral');
+        },
+
+        /**
+         * Zadanie, w którym przedmiot został zaliczony. Kierunek przychodzi
+         * czasem po przełączeniu zadania — wtedy należy do zadania z chwili
+         * zaliczenia, inaczej nowe zadanie miałoby sprzedane bez paczek.
+         * null — brak zapamiętanego zadania albo zostało usunięte.
+         */
+        _owner(taskId) {
+            return taskId ? this.byId(taskId) : null;
+        },
+
+        /**
+         * Liczniki zadania prosto z magazynu. Dwie karty działu dzielą klucz,
+         * a ręczna poprawka liczona od pamięci nadpisałaby paczki sąsiedniej
+         * karty, których zdarzenie storage jeszcze nie doszło.
+         */
+        _fresh(id, tabKey) {
+            return Persistence.freshTaskCounter(id, tabKey, this.counters(id, tabKey));
         },
 
         /**
@@ -8432,7 +8662,7 @@ const PAID_SHIFT_HOURS = 10;
             // paczką, więc kończy pauzę tak samo, jak zaliczona automatycznie.
             const task = this.ensureRunning();
             if (!task) return;
-            const c = this.counters(task.id, tabKey);
+            const c = this._fresh(task.id, tabKey);
             this._write(task.id, tabKey, { ...c, done: c.done + delta, neutral: c.neutral + delta });
         },
 
@@ -8476,7 +8706,7 @@ const PAID_SHIFT_HOURS = 10;
             }
             for (let i = store.tasks.length - 1; i >= 0 && diff < 0; i--) {
                 const task = store.tasks[i];
-                const c = this.counters(task.id, tabKey);
+                const c = this._fresh(task.id, tabKey);
                 if (!c.done) continue;
                 const take = Math.min(c.done, -diff);
                 this._write(task.id, tabKey, this._shrink(c, c.done - take));
@@ -8487,7 +8717,7 @@ const PAID_SHIFT_HOURS = 10;
         /** Suma pola po wszystkich zadaniach dla jednej karty. */
         shiftTotal(tabKey, field) {
             let sum = 0;
-            for (const task of store.tasks) sum += this.counters(task.id, tabKey)[field] || 0;
+            for (const task of store.tasks) sum += this._fresh(task.id, tabKey)[field] || 0;
             return sum;
         },
 
@@ -8837,8 +9067,12 @@ const PAID_SHIFT_HOURS = 10;
         /** Jedyne miejsce, z którego T-REX otwiera GRAVIS — kliknięcie w panelu. */
         open() {
             if (!this.enabled()) return;
+            const win = window.open(CONFIG.GRAVIS_URL, CONFIG.GRAVIS_WINDOW_NAME);
+            // Blokada wyskakujących okien zwraca null: działające połączenie
+            // zostaje, zamiast urwać się do następnego sygnału gotowości.
+            if (!win) return;
             this.ready = false;
-            this.win = window.open(CONFIG.GRAVIS_URL, CONFIG.GRAVIS_WINDOW_NAME);
+            this.win = win;
         },
         /** Wyłączenie mostu. Karty GRAVIS nie zamykamy — mogła być potrzebna sama w sobie. */
         close() {
@@ -8852,8 +9086,9 @@ const PAID_SHIFT_HOURS = 10;
             this.lastLpn = lpn;
             this.asin = null;
             this.removeChip();
-            if (!this.win || this.win.closed) return;
-            if (!this.ready) { this.pendingLpn = lpn; return; }
+            // Bez okna (T-REX po przeładowaniu, zanim GRAVIS da znak) LPN
+            // czeka na sygnał gotowości, a nie przepada.
+            if (!this.ready || !this.win || this.win.closed) { this.pendingLpn = lpn; return; }
             this.pendingLpn = null;
             this.win.postMessage({ type: 'sh-gravis-lpn', lpn }, this.origin());
         },
@@ -8967,6 +9202,9 @@ const PAID_SHIFT_HOURS = 10;
             this.badge(I18n.get('gravis_badgeOk'), '#2E7D32');
         },
         badge(text, color) {
+            // Ponowne wklejenie skryptu w karcie bez opener zostawiłoby drugi znaczek.
+            const old = document.getElementById(CONFIG.SCRIPT_ID_PREFIX + 'gravisBadge');
+            if (old) old.remove();
             document.body.appendChild(h('div', {
                 id: 'gravisBadge', textContent: text,
                 style: { position: 'fixed', left: '6px', top: '6px', zIndex: '2147483646',
@@ -9145,6 +9383,198 @@ const PAID_SHIFT_HOURS = 10;
             this.timer = null;
             if (this.el) this.el.remove();
             this.el = null;
+        },
+    };
+
+    // ─── src/30-datamatrix.js ───
+    // ==========================================
+    // 6j. KOD DATA MATRIX
+    // ==========================================
+    /**
+     * Kod Data Matrix (ECC200) z tekstu — żeby zakładkę dało się zeskanować
+     * telefonem albo skanerem zamiast przepisywać. Bez sieci i bez bibliotek:
+     * tylko macierz modułów, rysuje ją wywołujący.
+     *
+     * Kodowanie ASCII (norma ISO/IEC 16022): znak 0–127 to jeden symbol
+     * kodowy, para cyfr — jeden. Znaków spoza ASCII (np. „ł”) kod nie
+     * przyjmuje: większość generatorów i skanerów pracuje na jednej stronie
+     * kodowej i taki znak kończy się błędem albo krzakami. Dlatego tekst
+     * zakładki jest czysto ASCII.
+     *
+     * Tylko symbole kwadratowe, od 10×10 do 132×132 (do 1304 symboli
+     * kodowych danych). 144×144 ma w normie bloki korekcji nierównej
+     * długości — zakładka mieści się w 72×72, więc go tu nie ma.
+     */
+    const DataMatrix = {
+        /** [bok symbolu, bok obszaru danych, dane, korekcja, bloki korekcji] — tablica z normy. */
+        SIZES: [
+            [10, 8, 3, 5, 1], [12, 10, 5, 7, 1], [14, 12, 8, 10, 1], [16, 14, 12, 12, 1],
+            [18, 16, 18, 14, 1], [20, 18, 22, 18, 1], [22, 20, 30, 20, 1], [24, 22, 36, 24, 1],
+            [26, 24, 44, 28, 1], [32, 14, 62, 36, 1], [36, 16, 86, 42, 1], [40, 18, 114, 48, 1],
+            [44, 20, 144, 56, 1], [48, 22, 174, 68, 1], [52, 24, 204, 84, 2], [64, 14, 280, 112, 2],
+            [72, 16, 368, 144, 4], [80, 18, 456, 192, 4], [88, 20, 576, 224, 4], [96, 22, 696, 272, 4],
+            [104, 24, 816, 336, 6], [120, 18, 1050, 408, 6], [132, 20, 1304, 496, 8],
+        ],
+
+        /**
+         * Symbole kodowe danych w kodowaniu ASCII.
+         * @returns {number[]|null} null, gdy w tekście jest znak spoza ASCII.
+         */
+        encodeAscii(text) {
+            const out = [];
+            for (let i = 0; i < text.length; i++) {
+                const c = text.charCodeAt(i);
+                if (c > 127) return null;
+                const next = text.charCodeAt(i + 1);
+                if (c >= 48 && c <= 57 && next >= 48 && next <= 57) {
+                    out.push(130 + (c - 48) * 10 + (next - 48));
+                    i++;
+                } else {
+                    out.push(c + 1);
+                }
+            }
+            return out;
+        },
+
+        /** Tablice logarytmów GF(256) z wielomianem 0x12D — liczone raz. */
+        _gf() {
+            if (this._log) return;
+            this._exp = new Array(512);
+            this._log = new Array(256);
+            let x = 1;
+            for (let i = 0; i < 255; i++) {
+                this._exp[i] = x;
+                this._log[x] = i;
+                x <<= 1;
+                if (x & 0x100) x ^= 0x12D;
+            }
+            for (let i = 255; i < 512; i++) this._exp[i] = this._exp[i - 255];
+        },
+
+        /** Symbole korekcji Reeda-Solomona dla jednego bloku. */
+        reedSolomon(data, n) {
+            this._gf();
+            const mul = (a, b) => (a && b) ? this._exp[this._log[a] + this._log[b]] : 0;
+            // Wielomian generujący (x − α)(x − α²)…(x − αⁿ).
+            let g = [1];
+            for (let i = 1; i <= n; i++) {
+                const next = new Array(g.length + 1).fill(0);
+                for (let j = 0; j < g.length; j++) {
+                    next[j] ^= g[j];
+                    next[j + 1] ^= mul(g[j], this._exp[i]);
+                }
+                g = next;
+            }
+            const ecc = new Array(n).fill(0);
+            for (const d of data) {
+                const k = d ^ ecc[0];
+                for (let j = 0; j < n - 1; j++) ecc[j] = ecc[j + 1] ^ mul(k, g[j + 1]);
+                ecc[n - 1] = mul(k, g[n]);
+            }
+            return ecc;
+        },
+
+        /**
+         * Macierz modułów: true — moduł ciemny. Bez strefy ciszy (ramki
+         * jasnych modułów) — tę dokłada rysujący.
+         * @returns {boolean[][]|null} null, gdy tekst nie jest ASCII albo
+         *   nie mieści się w największym symbolu.
+         */
+        encode(text) {
+            const data = this.encodeAscii(String(text));
+            if (!data) return null;
+            const size = this.SIZES.find(s => s[2] >= data.length);
+            if (!size) return null;
+            const [side, region, dataCount, eccCount, blocks] = size;
+
+            // Dopełnienie: pierwszy symbol 129, kolejne pseudolosowe z normy
+            // (zależne od pozycji, liczonej od 1).
+            if (data.length < dataCount) data.push(129);
+            while (data.length < dataCount) {
+                let v = 129 + ((149 * (data.length + 1)) % 253) + 1;
+                if (v > 254) v -= 254;
+                data.push(v);
+            }
+
+            // Korekcja w blokach przeplatanych: symbol i należy do bloku i % bloki.
+            const perBlock = eccCount / blocks;
+            const codewords = data.slice();
+            for (let b = 0; b < blocks; b++) {
+                const ecc = this.reedSolomon(data.filter((_, i) => i % blocks === b), perBlock);
+                ecc.forEach((e, j) => { codewords[dataCount + j * blocks + b] = e; });
+            }
+
+            const regions = side / (region + 2);
+            const nrow = side - 2 * regions;
+            const bits = this.place(nrow, nrow, codewords);
+
+            // Obszary danych w ramkach: lewa i dolna krawędź pełne, górna
+            // i prawa naprzemienne.
+            const per = region + 2;
+            const m = [];
+            for (let r = 0; r < side; r++) {
+                const row = [];
+                for (let c = 0; c < side; c++) {
+                    const lr = r % per, lc = c % per;
+                    let dark;
+                    if (lc === 0 || lr === per - 1) dark = true;
+                    else if (lr === 0) dark = lc % 2 === 0;
+                    else if (lc === per - 1) dark = lr % 2 === 1;
+                    else {
+                        const y = r - 2 * Math.floor(r / per) - 1;
+                        const x = c - 2 * Math.floor(c / per) - 1;
+                        dark = bits[y * nrow + x] === 1;
+                    }
+                    row.push(dark);
+                }
+                m.push(row);
+            }
+            return m;
+        },
+
+        /**
+         * Rozkład bitów symboli kodowych w obszarze danych — algorytm
+         * „utah” z normy, z czterema przypadkami narożnymi.
+         * @returns {number[]} nrow × ncol bitów (0 albo 1).
+         */
+        place(nrow, ncol, codewords) {
+            const a = new Array(nrow * ncol).fill(-1);
+            const mod = (row, col, chr, bit) => {
+                if (row < 0) { row += nrow; col += 4 - ((nrow + 4) % 8); }
+                if (col < 0) { col += ncol; row += 4 - ((ncol + 4) % 8); }
+                a[row * ncol + col] = (codewords[chr] >> (8 - bit)) & 1;
+            };
+            const utah = (row, col, chr) => {
+                mod(row - 2, col - 2, chr, 1); mod(row - 2, col - 1, chr, 2);
+                mod(row - 1, col - 2, chr, 3); mod(row - 1, col - 1, chr, 4);
+                mod(row - 1, col, chr, 5); mod(row, col - 2, chr, 6);
+                mod(row, col - 1, chr, 7); mod(row, col, chr, 8);
+            };
+            const corner = (chr, cells) => cells.forEach(([r, c], i) => mod(r, c, chr, i + 1));
+            const R = nrow, C = ncol;
+            let chr = 0, row = 4, col = 0;
+            do {
+                if (row === R && col === 0) corner(chr++, [[R - 1, 0], [R - 1, 1], [R - 1, 2], [0, C - 2], [0, C - 1], [1, C - 1], [2, C - 1], [3, C - 1]]);
+                if (row === R - 2 && col === 0 && C % 4) corner(chr++, [[R - 3, 0], [R - 2, 0], [R - 1, 0], [0, C - 4], [0, C - 3], [0, C - 2], [0, C - 1], [1, C - 1]]);
+                if (row === R - 2 && col === 0 && C % 8 === 4) corner(chr++, [[R - 3, 0], [R - 2, 0], [R - 1, 0], [0, C - 2], [0, C - 1], [1, C - 1], [2, C - 1], [3, C - 1]]);
+                if (row === R + 4 && col === 2 && !(C % 8)) corner(chr++, [[R - 1, 0], [R - 1, C - 1], [0, C - 3], [0, C - 2], [0, C - 1], [1, C - 3], [1, C - 2], [1, C - 1]]);
+                do {
+                    if (row < R && col >= 0 && a[row * C + col] < 0) utah(row, col, chr++);
+                    row -= 2; col += 2;
+                } while (row >= 0 && col < C);
+                row += 1; col += 3;
+                do {
+                    if (row >= 0 && col < C && a[row * C + col] < 0) utah(row, col, chr++);
+                    row += 2; col -= 2;
+                } while (row < R && col >= 0);
+                row += 3; col += 1;
+            } while (row < R || col < C);
+            // Narożnik bez symbolu: stały wzór szachownicy 2×2.
+            if (a[R * C - 1] < 0) {
+                a[R * C - 1] = a[R * C - C - 2] = 1;
+                a[R * C - 2] = a[R * C - C - 1] = 0;
+            }
+            return a;
         },
     };
 
